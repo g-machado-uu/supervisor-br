@@ -1,117 +1,172 @@
-# Supervisor
+# Supervisor BR
 
-A desktop app for keeping track of the students you supervise: final-year projects, PhD and MSc students, placement visits and studies advisees. It runs on Linux, Windows and macOS, and keeps everything in one encrypted file on your computer.
-This project is built with the help of Claude Opus 5.5.
-![Dashboard](docs/screenshots/dashboard.png)
+Um aplicativo de desktop para professores de universidades brasileiras acompanharem seus orientandos: **TCC**, **iniciação científica**, **estágio supervisionado**, **tutoria** e **pós-graduação** (especialização, residência, mestrado acadêmico e profissional, doutorado e pós-doutorado). Funciona em Linux, Windows e macOS e guarda tudo em um único arquivo criptografado no seu computador.
 
-## What it does
+É um fork do [Supervisor](https://github.com/g-machado-uu/supervisor), traduzido e adaptado à realidade brasileira: bolsas do CNPq, da CAPES e das FAPs, prazos de qualificação e defesa, e matrícula que muitas vezes é o próprio CPF. Desenvolvido com a ajuda do Claude Opus 5.5.
 
-- **Dashboard**: what's coming up, and what needs chasing (no reply, overdue coursework, PhD deadlines, visas about to end).
-- **Lists** for each group of students. Click a student to open their details on the right.
-- **Meetings**, one-off or repeating, online (Teams or Google Meet, with the meeting link) or in a room. Mark each week as held, cancelled or moved.
-- **Coursework deadlines** are worked out from the teaching weeks you set in Settings.
-- **Research students**, in four lists: PhD, PhD External, MSc and MSc External. Assessments, annual reports, submission and viva: type in the deadlines from the university system and the app reminds you in time.
-- **External students** (registered at another university) start with a blank list of assessments. Add their own deadlines and choose how long before each one to be reminded. You can do the same for any student, alongside the standard assessments.
-- **Placement visits**: requests, replies and whether the line manager is coming.
-- **Calendar** as a list or a month grid. Once a meeting's time has passed, mark it as held or postpone it right there (in the month grid, right-click it). Export any items to an `.ics` file for Outlook or Google Calendar, or save an invite file for one meeting to send to the student.
+![Painel](docs/screenshots/painel.png)
 
-![Student details](docs/screenshots/student.png)
+> Todos os nomes, e-mails e empresas das imagens são fictícios.
 
-## Your data
+## O que ele faz
 
-- Everything is in **one encrypted file**, protected by your password. It saves automatically and keeps a backup of the file as it was when you unlocked it (`.bak`).
-- **Save** (click _Saved_ at the bottom of the sidebar, or `Ctrl+S`) saves straight away without locking. The backup then keeps that version, so you can go back to it if later changes go wrong.
-- **There is no password recovery.** Remember the password and keep a backup of the file.
-- New passwords need **at least 12 characters**. A short sentence you'll remember works well.
-- Default location:
-  - Linux: `~/.local/share/supervisor/data.svt`
-  - Windows: `%APPDATA%\Supervisor\data\data.svt`
-  - macOS: `~/Library/Application Support/Supervisor/data.svt`
+- **Painel**: o que vem pela frente nos próximos dias e o que precisa de atenção (aluno sem contato inicial, entrega atrasada, prazo de qualificação chegando, bolsa perto do fim).
+- **Listas** para cada grupo de alunos. Clique em um aluno para abrir os detalhes à direita. Um mesmo aluno pode ter vários vínculos (por exemplo, TCC e iniciação científica).
+- **Reuniões** avulsas ou recorrentes, on-line (Google Meet, Microsoft Teams, Zoom ou RNP, com o link) ou presenciais. Marque cada semana como realizada, cancelada ou remarcada.
+- **Agenda** em lista ou em grade mensal. Exporte qualquer item para um arquivo `.ics` (Google Agenda, Outlook) ou salve o convite de uma reunião para enviar ao aluno.
 
-  You can open or create a file somewhere else (e.g. a synced folder) from the unlock screen.
+### Graduação
 
-- **Lock** (bottom of the sidebar, or `Ctrl+L`) saves your changes and closes your data; you need your password to open it again. Supervisor also locks by itself after **10 minutes** without use. Change this in Settings › Security.
-- If saving fails (for example, a network drive is disconnected), Supervisor tells you and won't lock or close until your changes are saved, unless you choose to discard them.
-- A data file can be open in only one Supervisor window at a time. If it is changed somewhere else while you have it open (e.g. on another computer sharing the file), Supervisor asks before replacing that version, and keeps it as the `.bak`.
-- Exported `.ics` files are **not** encrypted.
+- **TCC**: cursos e disciplinas (TCC I, TCC II…) configuráveis, com as entregas de cada uma, prazos por semana letiva ou data fixa, prorrogação por aluno, e a defesa com banca, local e nota.
+- **Iniciação científica**: plano de trabalho, projeto, modalidade (PIBIC, PIBITI, PIBIC-Af, PIBIC-EM, voluntária, institucional), bolsa e os prazos do ciclo: relatório parcial, relatório final e apresentação no seminário/congresso de IC.
+- **Estágio supervisionado**: concedente, estágio obrigatório ou não, vigência do Termo de Compromisso de Estágio (Lei 11.788/2008), relatório e visitas de acompanhamento.
+- **Tutoria acadêmica**: reuniões de acompanhamento por semestre.
 
-## Key file (optional)
+![Iniciação científica](docs/screenshots/iniciacao_cientifica.png)
 
-If your data file is in a synced or shared folder (OneDrive, Dropbox, a network drive), you can protect it with a **key file** as well as your password. The key file is a small file kept on each computer you use, never next to the data file. Without it, a copy of the data file can't be opened, even by someone who guesses your password.
+### Pós-graduação
 
-**Turn it on:** in Settings › Key file, type your password and click **Add key file…**. Supervisor saves the key file on this computer and asks you to save a backup copy before turning it on. Keep that backup somewhere safe: a USB stick, or as an attachment in a password manager such as KeePassXC or Bitwarden.
+- **Lato sensu**: especialização (incluindo MBA) e residência.
+- **Stricto sensu**: mestrado acadêmico, mestrado profissional, doutorado acadêmico e doutorado profissional.
+- **Pós-doutorado**.
+- Para cada aluno: programa, situação, coorientação (inclusive de alunos de outros programas ou instituições), bolsa, etapas com prazo e lembrete, banca, resultado da defesa, versão final e data da titulação.
+- **Preencher prazos sugeridos** calcula, a partir da data de ingresso, os prazos de integralização dos créditos, proficiência em língua estrangeira, exame de qualificação, relatórios anuais, envio do trabalho à banca e defesa. Datas já preenchidas não são alteradas.
+- Você pode desligar as etapas padrão e cadastrar apenas os prazos do regimento do programa do aluno, cada um com o seu lembrete.
 
-**On each other computer:** open the data file as usual. Supervisor says the key file is missing; click **Import key file…** and choose your backup copy. You only do this once per computer.
+![Bolsa e prazos de um doutorado](docs/screenshots/doutorado_prazos.png)
 
-The key file is kept here:
+### Bolsas e agências de fomento
 
-| Computer | Key file                                   | To open the folder                                                                                |
-| -------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| Linux    | `~/.config/supervisor/key.bin`             | In your file manager, press `Ctrl+H` to show hidden folders                                       |
-| Windows  | `%APPDATA%\Supervisor\config\key.bin`      | Press `Win+R`, paste `%APPDATA%\Supervisor\config`, press Enter                                   |
-| macOS    | `~/Library/Preferences/Supervisor/key.bin` | In Finder, choose Go › Go to Folder… (`Shift+Cmd+G`) and paste `~/Library/Preferences/Supervisor` |
+A bolsa de cada aluno (IC ou pós) registra a agência, a modalidade, o número do processo, o início, a duração, a prorrogação e o motivo dela. O fim da vigência é calculado e o painel avisa 90 dias antes.
 
-Instead of using **Import key file…**, you can copy your backup into that folder yourself (create the folder if it isn't there) and rename it `key.bin`. On Linux, also run `chmod 600 ~/.config/supervisor/key.bin`.
+Agências na lista:
 
-- **Never keep the key file or its backup in the same folder as the data file.** If they're together, the key file protects nothing.
-- **If you lose every copy of the key file, your data can't be opened**, even with the right password.
-- Copies of the data file made before you turned the key file on (older backups, or your sync service's version history) still open with the password alone.
-- To turn it off, go to Settings › Key file and click **Remove key file**.
+- **Federais**: CNPq, CAPES, FINEP, PRH-ANP, MEC (PET, residências) e Ministério da Saúde (residências).
+- **Estaduais**: as fundações de amparo à pesquisa dos 26 estados e do Distrito Federal, como FAPESP, FAPEMIG, FAPERJ, FACEPE, FAPESB, FAPERGS, Fundação Araucária, FAPDF, FUNCAP e FAPEAM.
+- **Outras**: bolsa institucional, empresa ou outra fonte (com o nome à sua escolha).
 
-## Getting started
+### Prazos sugeridos
 
-1. Set a password on first launch.
-2. In **Settings**, enter the academic year and the date week 1 starts in each semester.
-3. Add students with **Add student** (`Ctrl+N`) and fill in the rest from their details panel.
+Os prazos padrão de cada nível ficam em **Configurações › Prazos da pós-graduação**, em meses a partir do ingresso, e podem ser alterados para seguir o regimento do seu programa:
 
-## Install
+| Nível                  | Créditos | Proficiência | Qualificação | Defesa |
+| ---------------------- | -------: | -----------: | -----------: | -----: |
+| Especialização         |       12 |            – |            – |     18 |
+| Residência             |        – |            – |            – |     24 |
+| Mestrado acadêmico     |       12 |           12 |           12 |     24 |
+| Mestrado profissional  |       12 |           12 |           15 |     24 |
+| Doutorado acadêmico    |       24 |           24 |           24 |     48 |
+| Doutorado profissional |       24 |           24 |           30 |     48 |
+| Pós-doutorado          |        – |            – |            – |     12 |
 
-You need [Rust](https://rustup.rs) 1.95 or newer on every platform.
+De onde vêm esses números:
 
-### Linux
+- **Duração das bolsas de pós**: até 24 meses no mestrado e 48 no doutorado (Portaria CAPES nº 76/2010, art. 10, do programa de Demanda Social, e normas equivalentes do CNPq). O prazo de defesa sugerido coincide com o fim da bolsa.
+- **Iniciação científica**: ciclo de 12 meses com relatório parcial, relatório final e apresentação em evento de IC (RN-017/2006 do CNPq, que rege o PIBIC e o PIBITI).
+- **Prorrogação**: cada aluno tem um campo de prorrogação, em meses, com o motivo: licença-maternidade/paternidade ou adoção (Lei 14.925/2024 garante a prorrogação dos prazos acadêmicos e da bolsa), saúde, decisão do colegiado ou outro. O app mostra a nova data e pergunta se você quer usá-la.
 
-On Debian/Ubuntu, first install `libxkbcommon-dev libwayland-dev`. Then:
+As regras variam entre programas e mudam com o tempo. Os prazos sugeridos são um ponto de partida: confira o regimento do programa e o termo de outorga da bolsa e ajuste o que for preciso.
+
+## Privacidade: matrícula e CPF
+
+Em muitas instituições a matrícula é o próprio CPF do aluno. Por isso:
+
+- A matrícula aparece **mascarada** (`•••.•••.•••-••`) nas listas e nos detalhes do aluno. Para vê-la, clique em **Revelar**; ela volta a ficar oculta quando você muda de aluno.
+- Em **Configurações › Privacidade** você pode pedir que o app **solicite a sua senha** antes de revelar a matrícula, ou desligar o mascaramento.
+- Quando a matrícula é um CPF válido, o app avisa para evitar compartilhá-la. A busca encontra o aluno pelo CPF com ou sem pontuação.
+
+![Revelar matrícula](docs/screenshots/revelar_matricula.png)
+
+## Seus dados
+
+- Tudo fica em **um único arquivo criptografado** (Argon2id + XChaCha20-Poly1305), protegido pela sua senha. O app salva sozinho e guarda uma cópia de segurança (`.bak`) do arquivo como estava quando você o desbloqueou.
+- **Salvar agora**: clique em _Salvo_ no rodapé da barra lateral ou use `Ctrl+S`. A cópia `.bak` passa a ser essa versão.
+- **Não existe recuperação de senha.** Guarde a senha e faça cópias do arquivo.
+- Senhas novas precisam ter **pelo menos 12 caracteres**. Uma frase curta que você lembre funciona bem.
+- Local padrão:
+  - Linux: `~/.local/share/supervisor-br/data.svt`
+  - Windows: `%APPDATA%\Supervisor-BR\data\data.svt`
+  - macOS: `~/Library/Application Support/Supervisor-BR/data.svt`
+
+  Na tela de desbloqueio você pode abrir ou criar um arquivo em outro lugar (por exemplo, numa pasta sincronizada).
+
+- **Bloquear** (rodapé da barra lateral ou `Ctrl+L`) salva e fecha os dados; para abrir de novo é preciso a senha. O app também se bloqueia sozinho depois de **10 minutos** sem uso (ajuste em Configurações › Segurança).
+- Se não for possível salvar (um drive de rede desconectado, por exemplo), o app avisa e não bloqueia nem fecha até salvar, a menos que você escolha descartar as alterações.
+- Um arquivo de dados só pode estar aberto em uma janela por vez. Se ele for alterado em outro lugar (outro computador que compartilha o arquivo), o app pergunta antes de substituir essa versão e a guarda como `.bak`.
+- Os arquivos `.ics` exportados **não** são criptografados.
+
+## Arquivo-chave (opcional)
+
+Se o arquivo de dados fica numa pasta sincronizada ou compartilhada (OneDrive, Google Drive, Dropbox, drive de rede), você pode protegê-lo também com um **arquivo-chave**: um arquivo pequeno guardado em cada computador que você usa, nunca junto do arquivo de dados. Sem ele, uma cópia do arquivo de dados não abre, nem para quem descobrir a sua senha.
+
+**Para ativar:** em Configurações › Arquivo-chave, digite a sua senha e clique em **Adicionar arquivo-chave…**. O app salva o arquivo-chave neste computador e pede que você salve uma cópia de segurança antes de ativá-lo. Guarde essa cópia em um lugar seguro: um pendrive, ou como anexo num gerenciador de senhas como KeePassXC ou Bitwarden.
+
+**Em cada outro computador:** abra o arquivo de dados normalmente. O app avisa que falta o arquivo-chave; clique em **Importar arquivo-chave…** e escolha a sua cópia. Isso é feito uma vez por computador.
+
+O arquivo-chave fica em:
+
+| Sistema | Arquivo-chave                                 |
+| ------- | --------------------------------------------- |
+| Linux   | `~/.config/supervisor-br/key.bin`             |
+| Windows | `%APPDATA%\Supervisor-BR\config\key.bin`      |
+| macOS   | `~/Library/Preferences/Supervisor-BR/key.bin` |
+
+- **Nunca guarde o arquivo-chave ou a cópia dele na mesma pasta do arquivo de dados.** Juntos, o arquivo-chave não protege nada.
+- **Se você perder todas as cópias do arquivo-chave, os dados não abrem mais**, mesmo com a senha certa.
+- Cópias do arquivo de dados feitas antes de ativar o arquivo-chave (backups antigos, histórico de versões da nuvem) continuam abrindo só com a senha.
+- Para desativar, vá em Configurações › Arquivo-chave e clique em **Remover arquivo-chave**.
+
+## Primeiros passos
+
+1. Na primeira vez, crie uma senha.
+2. Em **Configurações**, informe o ano letivo e o início das aulas de cada semestre. Cadastre os seus cursos de graduação e as disciplinas de TCC com as entregas.
+3. Se o seu programa de pós tiver prazos diferentes, ajuste-os em **Configurações › Prazos da pós-graduação**.
+4. Adicione alunos com **Adicionar aluno** (`Ctrl+N`) e complete os dados no painel de detalhes.
+
+![Modo escuro](docs/screenshots/painel_escuro.png)
+
+## Instalação
+
+### Binários prontos
+
+Baixe o arquivo do seu sistema na página de [Releases](https://github.com/g-machado-uu/supervisor-br/releases) e confira-o com o `SHA256SUMS.txt`.
+
+- **Linux**: `chmod +x supervisor-br-linux && ./supervisor-br-linux`. Precisa de `libxkbcommon` e `libwayland-client` (já presentes na maioria das distribuições com interface gráfica).
+- **Windows**: execute `supervisor-br-windows.exe`. Se aparecer _"O Windows protegeu o computador"_, clique em _Mais informações_ → _Executar assim mesmo_. Se faltar `VCRUNTIME140.dll`, instale o [Visual C++ Redistributable](https://aka.ms/vc14/vc_redist.x64.exe).
+- **macOS** (Apple Silicon): o binário não é assinado. Rode `xattr -d com.apple.quarantine supervisor-br-macos && chmod +x supervisor-br-macos` e depois `./supervisor-br-macos` no Terminal.
+
+### A partir do código
+
+É preciso o [Rust](https://rustup.rs) 1.95 ou mais recente.
+
+**Linux** (no Debian/Ubuntu, instale antes `libxkbcommon-dev libwayland-dev`):
 
 ```sh
-./install.sh                       # build and install for your user
-./install.sh --path=~/Documents/   # ...and keep the data file in ~/Documents
-./install.sh --uninstall           # remove the app (your data is kept)
+./install.sh                         # compila e instala para o seu usuário
+./install.sh --path=~/Documentos/    # ...e guarda o arquivo de dados em ~/Documentos
+./install.sh --uninstall             # remove o app (seus dados são mantidos)
 ```
 
-This adds `supervisor` to `~/.local/bin` and puts it in your app launcher with its icon.
+Isso coloca `supervisor-br` em `~/.local/bin` e no menu de aplicativos, com o ícone.
 
-### Windows
+**Windows**: instale o Rust pelo [rustup.rs](https://rustup.rs) (com o Visual Studio Build Tools, opção _Desenvolvimento para desktop com C++_), rode `cargo build --release` e copie `target\release\supervisor-br.exe` para um lugar fixo, como `%LOCALAPPDATA%\Programs\Supervisor-BR\`.
 
-1. Install Rust from [rustup.rs](https://rustup.rs). When it asks, install the Visual Studio Build Tools with **Desktop development with C++**.
-2. Build:
-
-   ```powershell
-   cargo build --release
-   ```
-
-3. Copy `target\release\supervisor.exe` somewhere permanent, e.g. `%LOCALAPPDATA%\Programs\Supervisor\`. Right-click it to pin it to Start or make a desktop shortcut.
-
-To update, build again and replace the exe. Your data is stored separately, so it isn't affected.
-
-To run it on another PC, only the exe is needed. If Windows warns _"Windows protected your PC"_, click _More info_ → _Run anyway_. If it says _VCRUNTIME140.dll was not found_, install the [Visual C++ Redistributable](https://aka.ms/vc14/vc_redist.x64.exe).
-
-### macOS
-
-1. Install the developer tools with `xcode-select --install`, and Rust from [rustup.rs](https://rustup.rs).
-2. Build and install:
-
-   ```sh
-   cargo build --release
-   sudo cp target/release/supervisor /usr/local/bin/
-   ```
-
-3. Run `supervisor` from the Terminal.
-
-## Development
+**macOS**: instale as ferramentas de desenvolvedor (`xcode-select --install`) e o Rust, e então:
 
 ```sh
-cargo test                                         # unit tests + headless UI test
-SUPERVISOR_SHOTS=/some/dir cargo test end_to_end   # also save screenshots
+cargo build --release
+sudo cp target/release/supervisor-br /usr/local/bin/
 ```
 
-Pushing a `v*` tag runs `cargo audit` and the tests, then builds Linux, Windows and macOS binaries on GitHub Actions, plus a `SHA256SUMS.txt` with their checksums.
+Para atualizar, basta substituir o binário. Os dados ficam em outro lugar e não são afetados.
+
+## Desenvolvimento
+
+```sh
+cargo test                                             # testes de unidade e da interface (headless)
+SUPERVISOR_SHOTS=/alguma/pasta cargo test              # também salva screenshots
+```
+
+Os testes da interface percorrem todas as telas e painéis de detalhes em dois tamanhos de janela, nos modos claro e escuro, e falham se houver campo de texto pequeno demais ou widgets sobrepostos.
+
+Enviar uma tag `v*` roda o `cargo audit` e os testes, compila os binários para Linux, Windows e macOS no GitHub Actions e publica uma release com eles e o `SHA256SUMS.txt`.
