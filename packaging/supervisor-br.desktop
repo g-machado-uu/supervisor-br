@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Supervisor BR
+GenericName=Acompanhamento de orientandos
+Comment=Acompanhe alunos de TCC, iniciação científica, estágio, tutoria e pós-graduação
+Exec=supervisor-br
+Icon=supervisor-br
+Terminal=false
+Categories=Office;Education;
+StartupWMClass=supervisor-br
+Keywords=TCC;IC;mestrado;doutorado;orientação;bolsa;

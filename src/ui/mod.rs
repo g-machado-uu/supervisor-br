@@ -1,13 +1,15 @@
 pub mod advisee;
 pub mod calendar;
 pub mod dashboard;
-pub mod fyp;
+pub mod ic;
 pub mod icons;
 pub mod lock;
-pub mod phd;
 pub mod placement;
+pub mod pos;
 pub mod settings;
+pub mod steps;
 pub mod student_form;
 pub mod student_list;
+pub mod tcc;
 pub mod theme;
 pub mod widgets;

@@ -12,8 +12,10 @@ use zeroize::Zeroizing;
 
 use crate::ics;
 use crate::model::{
-    AdviseeRecord, Attention, CalItem, Database, Event, FypRecord, MeetingChange, PlacementRecord, ResearchGroup, Student,
+    AdviseeRecord, Attention, CalItem, Database, Event, IcRecord, Level, MeetingChange, PlacementRecord, PosGroup,
+    PosRecord, Student, TccRecord,
 };
+use crate::pt;
 use crate::storage::{self, KeyFile, Vault, VaultError, Written};
 use crate::ui::calendar::{self, CalAction, CalendarState};
 use crate::ui::dashboard::{self, DashAction};
@@ -136,12 +138,20 @@ enum Confirm {
     RemoveRole(Uuid, Role),
 }
 
+/// Asking for the password before showing an enrolment number.
+struct RevealPrompt {
+    student: Uuid,
+    password: Zeroizing<String>,
+    error: Option<String>,
+}
+
 struct NewStudent {
     student: Student,
-    fyp: bool,
+    tcc: bool,
     programme: String,
-    phd: bool,
-    research: ResearchGroup,
+    ic: bool,
+    pos: bool,
+    level: Level,
     placement: bool,
     company: String,
     professional_email: String,
@@ -157,25 +167,27 @@ impl NewStudent {
             .unwrap_or_default();
         let mut n = Self {
             student: Student::default(),
-            fyp: false,
+            tcc: false,
             programme: first,
-            phd: false,
-            research: ResearchGroup::Phd,
+            ic: false,
+            pos: false,
+            level: Level::MestradoAcademico,
             placement: false,
             company: String::new(),
             professional_email: String::new(),
             advisee: false,
         };
         match cat {
-            Some(Category::Projects(list)) => {
-                n.fyp = true;
+            Some(Category::Tcc(list)) => {
+                n.tcc = true;
                 if let Some(p) = settings.programmes.iter().find(|p| p.list_name() == list) {
                     n.programme = p.id.clone();
                 }
             }
-            Some(Category::Research(group)) => {
-                n.phd = true;
-                n.research = *group;
+            Some(Category::Ic) => n.ic = true,
+            Some(Category::Pos(group)) => {
+                n.pos = true;
+                n.level = group.level();
             }
             Some(Category::Placement) => n.placement = true,
             Some(Category::Advisee) => n.advisee = true,
@@ -186,14 +198,17 @@ impl NewStudent {
 
     fn build(self) -> Student {
         let mut s = self.student;
-        if self.fyp {
-            s.fyp = Some(FypRecord {
+        if self.tcc {
+            s.tcc = Some(TccRecord {
                 programme: self.programme,
                 ..Default::default()
             });
         }
-        if self.phd {
-            s.phd = Some(self.research.new_record());
+        if self.ic {
+            s.ic = Some(IcRecord::new());
+        }
+        if self.pos {
+            s.pos = Some(PosRecord::new(self.level));
         }
         if self.placement {
             s.placement = Some(PlacementRecord {
@@ -268,6 +283,9 @@ struct Session {
     weak_password: bool,
     /// Shown once the session is on screen.
     notice: Option<String>,
+    /// The student whose enrolment number is shown, until another is opened.
+    revealed: Option<Uuid>,
+    reveal_prompt: Option<RevealPrompt>,
 }
 
 impl Session {
@@ -299,9 +317,11 @@ impl Session {
             discard: false,
             weak_password,
             notice: weak_password.then(|| {
-                "Your password is easier to guess than Supervisor now allows – please change it in Settings › Security."
+                "A sua senha é mais fácil de adivinhar do que o Supervisor permite hoje – altere-a em Configurações › Segurança."
                     .to_string()
             }),
+            revealed: None,
+            reveal_prompt: None,
         }
     }
 
@@ -334,7 +354,7 @@ impl Session {
         let result = match received {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("saving stopped unexpectedly")),
+            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("o salvamento parou inesperadamente")),
         };
         let started_from = *started_from;
         self.saving = None;
@@ -381,7 +401,7 @@ impl Session {
     fn mark_restore_point(&mut self, now: f64) {
         self.save_requested = false;
         self.vault.mark_restore_point();
-        self.toast = Some(("Saved".into(), now));
+        self.toast = Some(("Salvo".into(), now));
     }
 
     /// Wait for a background save, before writing the file from this thread.
@@ -468,6 +488,10 @@ impl Session {
         }
         if let Some(msg) = self.notice.take() {
             self.notify(ui, msg);
+        }
+        // A revealed enrolment number is hidden again once another student is opened.
+        if self.revealed.is_some() && self.revealed != self.selected {
+            self.revealed = None;
         }
 
         if ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::L))) {
@@ -561,23 +585,15 @@ impl Session {
             .fill(theme::sidebar_fill(ui))
             .inner_margin(egui::Margin { left: 14, right: 14, top: 18, bottom: 14 });
         egui::Panel::left("nav")
-            .exact_size(232.0)
+            .exact_size(theme::SIDEBAR_WIDTH)
             .frame(frame)
             .show_separator_line(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(38.0, 38.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, egui::CornerRadius::same(12), theme::ACCENT);
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        icons::GRADUATION_CAP,
-                        egui::FontId::proportional(21.0),
-                        egui::Color32::WHITE,
-                    );
+                    theme::logo(ui, 42.0);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        ui.label(theme::serif("Supervisor", 21.0));
+                        ui.label(theme::serif("Supervisor BR", 21.0));
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&self.db.settings.academic_year).small().color(theme::muted(ui)));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -586,11 +602,18 @@ impl Session {
                         });
                     });
                 });
-                ui.add_space(18.0);
+                ui.add_space(12.0);
+
+                // The buttons at the bottom get their own strip, so a long
+                // list of lists scrolls instead of running under them.
+                egui::Panel::bottom("nav-bottom")
+                    .frame(egui::Frame::NONE)
+                    .show_separator_line(false)
+                    .show(ui, |ui| self.sidebar_bottom(ui, lock, save_now));
 
                 ui.spacing_mut().item_spacing.y = 3.0;
                 let section = |ui: &mut Ui, text: &str| {
-                    ui.add_space(12.0);
+                    ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         ui.add_space(14.0);
                         ui.label(
@@ -608,75 +631,87 @@ impl Session {
                         self.view = view;
                     }
                 };
-                nav(ui, View::Dashboard, icons::HOUSE, "Dashboard", None);
-                nav(ui, View::Calendar, icons::CALENDAR_DOTS, "Calendar", None);
-                section(ui, "PROJECT STUDENTS");
-                for list in lists {
-                    let cat = Category::Projects(list.clone());
-                    let count = cat.count(&self.db);
-                    nav(ui, View::List(cat), icons::BOOK_OPEN_TEXT, &list, Some(count));
-                }
-                section(ui, "RESEARCH");
-                for group in ResearchGroup::ALL {
-                    let cat = Category::Research(group);
-                    let count = cat.count(&self.db);
-                    nav(ui, View::List(cat), icons::GRADUATION_CAP, group.label(), Some(count));
-                }
-                section(ui, "OTHER");
-                nav(ui, View::List(Category::Placement), icons::BUILDINGS, "Placement", Some(Category::Placement.count(&self.db)));
-                nav(ui, View::List(Category::Advisee), icons::CHAT_CIRCLE_TEXT, "Studies Advisees", Some(Category::Advisee.count(&self.db)));
-                nav(ui, View::List(Category::All), icons::USERS_THREE, "All Students", Some(Category::All.count(&self.db)));
-
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add(egui::Button::new(format!("{}  Lock", icons::LOCK_SIMPLE)).corner_radius(egui::CornerRadius::same(10)))
-                            .on_hover_text("Lock (Ctrl+L)")
-                            .clicked()
-                        {
-                            *lock = true;
-                        }
-                        let dark = &mut self.db.settings.dark_mode;
-                        if ui
-                            .add(egui::Button::new(RichText::new(if *dark { icons::SUN } else { icons::MOON }).size(16.0)).corner_radius(egui::CornerRadius::same(10)))
-                            .on_hover_text("Toggle light/dark")
-                            .clicked()
-                        {
-                            *dark = !*dark;
-                        }
-                        // The save status doubles as the Save button.
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let (text, color, hover) = match &self.status {
-                                SaveStatus::Conflict => {
-                                    ui.label(RichText::new(format!("{} Not saved", icons::WARNING)).small().color(theme::fg(ui, theme::RED)))
-                                        .on_hover_text("The data file was changed somewhere else");
-                                    return;
-                                }
-                                SaveStatus::Saved => (
-                                    format!("{} Saved", icons::FLOPPY_DISK),
-                                    theme::fg(ui, theme::GREEN),
-                                    "All changes are saved and encrypted.\nClick to save now and keep this version as the backup (Ctrl+S).".to_string(),
-                                ),
-                                SaveStatus::Pending => ("Saving…".to_string(), theme::muted(ui), "Click to save now (Ctrl+S)".to_string()),
-                                SaveStatus::Error(e) => (
-                                    format!("{} Save failed", icons::WARNING),
-                                    theme::fg(ui, theme::RED),
-                                    format!("{e}\nClick to try again."),
-                                ),
-                            };
-                            let button = egui::Button::new(RichText::new(text).small().color(color))
-                                .frame_when_inactive(false)
-                                .corner_radius(egui::CornerRadius::same(10));
-                            if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hover).clicked() {
-                                *save_now = true;
-                            }
-                        });
-                    });
-                    ui.add_space(4.0);
-                    nav(ui, View::Settings, icons::GEAR_SIX, "Settings", None);
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    nav(ui, View::Dashboard, icons::HOUSE, "Painel", None);
+                    nav(ui, View::Calendar, icons::CALENDAR_DOTS, "Agenda", None);
+                    section(ui, "GRADUAÇÃO");
+                    for list in lists {
+                        let cat = Category::Tcc(list.clone());
+                        let count = cat.count(&self.db);
+                        let label = if list == "TCC" { "TCC".to_string() } else { format!("TCC – {list}") };
+                        nav(ui, View::List(cat), icons::BOOK_OPEN_TEXT, &label, Some(count));
+                    }
+                    nav(ui, View::List(Category::Ic), icons::FLASK, "Iniciação científica", Some(Category::Ic.count(&self.db)));
+                    nav(ui, View::List(Category::Placement), icons::BUILDINGS, "Estágio", Some(Category::Placement.count(&self.db)));
+                    nav(ui, View::List(Category::Advisee), icons::CHAT_CIRCLE_TEXT, "Tutoria", Some(Category::Advisee.count(&self.db)));
+                    section(ui, "PÓS-GRADUAÇÃO");
+                    for group in PosGroup::ALL {
+                        let cat = Category::Pos(group);
+                        let count = cat.count(&self.db);
+                        nav(ui, View::List(cat), icons::GRADUATION_CAP, group.label(), Some(count));
+                    }
+                    section(ui, "GERAL");
+                    nav(ui, View::List(Category::All), icons::USERS_THREE, "Todos os alunos", Some(Category::All.count(&self.db)));
                 });
             });
+    }
+
+    /// Settings, Lock, the light/dark switch and the save status.
+    fn sidebar_bottom(&mut self, ui: &mut Ui, lock: &mut bool, save_now: &mut bool) {
+        ui.add_space(6.0);
+        if theme::nav_item(ui, icons::GEAR_SIX, "Configurações", None, self.view == View::Settings).clicked() {
+            self.view = View::Settings;
+        }
+        ui.spacing_mut().item_spacing.y = 6.0;
+        // Lock and the theme switch on the left, the save status on the
+        // right; it moves to its own line when the three don't fit.
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add(egui::Button::new(format!("{}  Bloquear", icons::LOCK_SIMPLE)).corner_radius(egui::CornerRadius::same(10)))
+                .on_hover_text("Bloquear (Ctrl+L)")
+                .clicked()
+            {
+                *lock = true;
+            }
+            let dark = &mut self.db.settings.dark_mode;
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(if *dark { icons::SUN } else { icons::MOON }).size(16.0))
+                        .corner_radius(egui::CornerRadius::same(10)),
+                )
+                .on_hover_text("Alternar claro/escuro")
+                .clicked()
+            {
+                *dark = !*dark;
+            }
+            // The save status doubles as the Save button.
+            {
+                let (text, color, hover) = match &self.status {
+                    SaveStatus::Conflict => {
+                        ui.label(RichText::new(format!("{} Não salvo", icons::WARNING)).small().color(theme::fg(ui, theme::RED)))
+                            .on_hover_text("O arquivo de dados foi alterado em outro lugar");
+                        return;
+                    }
+                    SaveStatus::Saved => (
+                        format!("{} Salvo", icons::FLOPPY_DISK),
+                        theme::fg(ui, theme::GREEN),
+                        "Todas as alterações estão salvas e criptografadas.\nClique para salvar agora e manter esta versão como backup (Ctrl+S).".to_string(),
+                    ),
+                    SaveStatus::Pending => ("Salvando…".to_string(), theme::muted(ui), "Clique para salvar agora (Ctrl+S)".to_string()),
+                    SaveStatus::Error(e) => (
+                        format!("{} Falha ao salvar", icons::WARNING),
+                        theme::fg(ui, theme::RED),
+                        format!("{e}\nClique para tentar de novo."),
+                    ),
+                };
+                let button = egui::Button::new(RichText::new(text).small().color(color))
+                    .frame_when_inactive(false)
+                    .corner_radius(egui::CornerRadius::same(10));
+                if ui.add(button).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hover).clicked() {
+                    *save_now = true;
+                }
+            }
+        });
     }
 
     fn detail_panel(&mut self, ui: &mut Ui) {
@@ -684,7 +719,8 @@ impl Session {
         let dup = self
             .db
             .student(id)
-            .is_some_and(|s| self.db.b_number_taken(&s.b_number, Some(id)));
+            .is_some_and(|s| self.db.enrollment_taken(&s.enrollment, Some(id)));
+        let revealed = self.revealed == Some(id);
         let Database { settings, students, .. } = &mut self.db;
         let Some(student) = students.iter_mut().find(|s| s.id == id) else {
             self.selected = None;
@@ -696,11 +732,11 @@ impl Session {
             .inner_margin(egui::Margin { left: 20, right: 14, top: 20, bottom: 8 });
         egui::Panel::right("detail")
             .resizable(true)
-            .default_size(500.0)
-            .min_size(420.0)
+            .default_size(540.0)
+            .min_size(460.0)
             .frame(frame)
             .show(ui, |ui| {
-                action = student_form::show(ui, student, settings, dup);
+                action = student_form::show(ui, student, settings, dup, revealed);
             });
         match action {
             FormAction::None => {}
@@ -708,6 +744,15 @@ impl Session {
             FormAction::Delete => self.confirm = Some(Confirm::DeleteStudent(id)),
             FormAction::RemoveRole(role) => self.confirm = Some(Confirm::RemoveRole(id, role)),
             FormAction::Invite(uid) => self.save_invite(ui, id, &uid),
+            FormAction::Reveal if self.db.settings.reveal_needs_password => {
+                self.reveal_prompt = Some(RevealPrompt {
+                    student: id,
+                    password: Zeroizing::new(String::new()),
+                    error: None,
+                });
+            }
+            FormAction::Reveal => self.revealed = Some(id),
+            FormAction::Hide => self.revealed = None,
         }
     }
 
@@ -740,9 +785,9 @@ impl Session {
                     CalAction::Change(event, change) => {
                         if self.db.change_meeting(&event, change) {
                             let done = match change {
-                                MeetingChange::Held(true) => "Marked as held".to_string(),
-                                MeetingChange::Held(false) => "Marked as not held".to_string(),
-                                MeetingChange::Postpone(date, _) => format!("Moved to {}", date.format("%a %d %b")),
+                                MeetingChange::Held(true) => "Marcada como realizada".to_string(),
+                                MeetingChange::Held(false) => "Marcada como não realizada".to_string(),
+                                MeetingChange::Postpone(date, _) => format!("Remarcada para {}", pt::weekday_day_month(date)),
                             };
                             self.notify(ui, done);
                         }
@@ -775,7 +820,7 @@ impl Session {
             View::Settings => {
                 let path = self.vault.path().display().to_string();
                 let mut in_use = std::collections::HashMap::new();
-                for f in self.db.students.iter().filter_map(|s| s.fyp.as_ref()) {
+                for f in self.db.students.iter().filter_map(|s| s.tcc.as_ref()) {
                     *in_use.entry(f.programme.clone()).or_insert(0) += 1;
                 }
                 let security = settings::Security {
@@ -814,7 +859,7 @@ impl Session {
         match std::fs::write(&path, text) {
             Ok(()) => true,
             Err(e) => {
-                self.notify(ui, format!("Saving {} failed: {e}", path.display()));
+                self.notify(ui, format!("Falha ao salvar {}: {e}", path.display()));
                 false
             }
         }
@@ -826,14 +871,14 @@ impl Session {
             return true;
         }
         self.view = View::Settings;
-        self.notify(ui, "Add your email in Settings › Invitations first");
+        self.notify(ui, "Adicione o seu e-mail em Configurações › Convites primeiro");
         false
     }
 
     fn export_ics(&mut self, ui: &Ui) {
         let items = self.db.cal_items(|_| true, true);
-        if self.write_ics(ui, &items, false, "supervisor.ics") {
-            self.notify(ui, format!("Exported {} items", items.len()));
+        if self.write_ics(ui, &items, false, "agenda.ics") {
+            self.notify(ui, format!("{} itens exportados", items.len()));
         }
     }
 
@@ -846,12 +891,12 @@ impl Session {
             .db
             .cal_items(|e| uids.contains(&e.uid), self.calendar.as_series);
         let name = if invite {
-            "supervisor-invites.ics"
+            "convites.ics"
         } else {
-            "supervisor-selection.ics"
+            "agenda-selecao.ics"
         };
         if self.write_ics(ui, &items, invite, name) {
-            let mut msg = format!("Exported {} items", items.len());
+            let mut msg = format!("{} itens exportados", items.len());
             if invite {
                 // Deadlines and reminders never have guests; anything else without one lacks an email.
                 let missing = items
@@ -862,9 +907,9 @@ impl Session {
                     })
                     .count();
                 if missing > 0 {
-                    msg.push_str(&format!(" – {missing} without a student email, add it to invite them"));
+                    msg.push_str(&format!(" – {missing} sem e-mail do aluno; adicione-o para convidar"));
                 } else {
-                    msg.push_str(" – upload it in Outlook, then open each event and Send");
+                    msg.push_str(" – importe no Outlook ou Google Agenda, abra cada evento e envie");
                 }
             }
             self.notify(ui, msg);
@@ -879,7 +924,7 @@ impl Session {
             return;
         };
         if invite.attendees.is_empty() {
-            self.notify(ui, "This student has no email address yet");
+            self.notify(ui, "Este aluno ainda não tem e-mail");
             return;
         }
         let name: String = format!(
@@ -897,20 +942,20 @@ impl Session {
         })
         .collect();
         let series = if invite.series.is_some() {
-            "repeating "
+            " (série recorrente)"
         } else {
             ""
         };
         let no_link = invite.event.online && ics::meeting_link(&invite.event, &self.db.settings).is_none();
-        let hint = if no_link && invite.event.platform == crate::model::Platform::GoogleMeet {
-            "upload it in Outlook, open the event, add the Google Meet link and Send"
+        let hint = if no_link && invite.event.platform == crate::model::Platform::Teams {
+            "importe no Outlook, abra o evento, ative “Reunião do Teams” e envie"
         } else if no_link {
-            "upload it in Outlook, open the event, turn on Teams meeting and Send"
+            "importe no Outlook ou Google Agenda, abra o evento, adicione o link da reunião e envie"
         } else {
-            "upload it in Outlook, open the event and Send"
+            "importe no Outlook ou Google Agenda, abra o evento e envie"
         };
         if self.write_ics(ui, &[invite], true, &format!("{name}.ics")) {
-            self.notify(ui, format!("{series}Invite saved – {hint}"));
+            self.notify(ui, format!("Convite salvo{series} – {hint}"));
         }
     }
 
@@ -920,16 +965,16 @@ impl Session {
         let result = if let Some(problem) = storage::password_problem(&pw.new) {
             Err(problem)
         } else if *pw.new != *pw.confirm {
-            Err("The new passwords do not match.".to_string())
+            Err("As novas senhas não coincidem.".to_string())
         } else {
             let result = self.vault.change_password(&pw.current, &pw.new, &self.db);
-            self.resealed(result, "Could not change password")
+            self.resealed(result, "Não foi possível alterar a senha")
         };
         if result.is_ok() {
             self.weak_password = false;
         }
         self.password_form.message = Some(match result {
-            Ok(()) => (true, "Password changed.".into()),
+            Ok(()) => (true, "Senha alterada.".into()),
             Err(e) => (false, e),
         });
     }
@@ -941,7 +986,7 @@ impl Session {
             return Ok(());
         };
         Err(match storage::vault_error(&e) {
-            Some(VaultError::WrongPassword) => "The current password is incorrect.".into(),
+            Some(VaultError::WrongPassword) => "A senha atual está incorreta.".into(),
             Some(VaultError::ChangedOnDisk) => {
                 self.status = SaveStatus::Conflict;
                 format!("{failed}: {e}")
@@ -956,16 +1001,16 @@ impl Session {
     fn start_key_file(&mut self) {
         let form = std::mem::take(&mut self.key_form);
         let result = (|| {
-            let path = storage::key_file_path().ok_or("This computer has no folder for settings.")?;
+            let path = storage::key_file_path().ok_or("Este computador não tem pasta de configurações.")?;
             if storage::same_folder(self.vault.path(), &path) {
                 return Err(format!(
-                    "Your data file is in the folder where the key file would go ({}). Move the data file first.",
+                    "O arquivo de dados está na pasta onde ficaria o arquivo-chave ({}). Mova o arquivo de dados primeiro.",
                     path.parent().unwrap_or(&path).display()
                 ));
             }
             match self.vault.check_password(&form.password) {
                 Ok(true) => {}
-                Ok(false) => return Err("The current password is incorrect.".into()),
+                Ok(false) => return Err("A senha atual está incorreta.".into()),
                 Err(e) => return Err(format!("{e:#}")),
             }
             // One key file per computer: reuse it if there already is one.
@@ -973,7 +1018,7 @@ impl Session {
                 Ok(Some(key)) => key,
                 Ok(None) => {
                     let key = KeyFile::generate();
-                    storage::install_key_file(&key).map_err(|e| format!("Could not save the key file: {e:#}"))?;
+                    storage::install_key_file(&key).map_err(|e| format!("Não foi possível salvar o arquivo-chave: {e:#}"))?;
                     key
                 }
                 Err(e) => return Err(format!("{e:#}")),
@@ -996,10 +1041,10 @@ impl Session {
         self.wait_for_save(ui);
         let Some(setup) = self.key_setup.take() else { return };
         let result = self.vault.set_key_file(&setup.password, Some(setup.key), &self.db);
-        self.key_form.message = Some(match self.resealed(result, "Could not turn on the key file") {
+        self.key_form.message = Some(match self.resealed(result, "Não foi possível ativar o arquivo-chave") {
             Ok(()) => (
                 true,
-                "Key file turned on. On another computer, Supervisor will ask for your backup copy the first time.".into(),
+                "Arquivo-chave ativado. Em outro computador, o Supervisor vai pedir a sua cópia de backup na primeira vez.".into(),
             ),
             Err(e) => (false, e),
         });
@@ -1009,11 +1054,11 @@ impl Session {
         self.wait_for_save(ui);
         let form = std::mem::take(&mut self.key_form);
         let result = self.vault.set_key_file(&form.password, None, &self.db);
-        self.key_form.message = Some(match self.resealed(result, "Could not remove the key file") {
+        self.key_form.message = Some(match self.resealed(result, "Não foi possível remover o arquivo-chave") {
             Ok(()) => (
                 true,
-                "Key file removed – your password alone opens this data file again. \
-                 The key file stays on this computer in case another data file uses it."
+                "Arquivo-chave removido – só a sua senha volta a abrir este arquivo de dados. \
+                 O arquivo-chave continua neste computador, caso outro arquivo de dados o use."
                     .into(),
             ),
             Err(e) => (false, e),
@@ -1023,9 +1068,9 @@ impl Session {
     fn dialogs(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         let without_saving = if self.leaving == Some(Leave::Quit) {
-            "Quit without saving"
+            "Sair sem salvar"
         } else {
-            "Lock without saving"
+            "Bloquear sem salvar"
         };
 
         if matches!(self.status, SaveStatus::Conflict) {
@@ -1036,25 +1081,25 @@ impl Session {
                 ui.set_width(460.0);
                 ui.horizontal(|ui| {
                     theme::icon_badge(ui, icons::WARNING, theme::AMBER, 40.0);
-                    ui.label(theme::serif("Changed somewhere else", 22.0));
+                    ui.label(theme::serif("Alterado em outro lugar", 22.0));
                 });
                 ui.add_space(4.0);
                 ui.label(
-                    "Since you unlocked it, your data file was changed by another copy of Supervisor – \
-                     probably on another computer that shares the file, or in a second window.",
+                    "Depois que você o desbloqueou, o arquivo de dados foi alterado por outra cópia do Supervisor – \
+                     provavelmente em outro computador que compartilha o arquivo, ou numa segunda janela.",
                 );
                 ui.add_space(4.0);
                 ui.label(format!(
-                    "Saving your version replaces that one. It is kept as {backup} in the same folder, so nothing is lost for good."
+                    "Salvar a sua versão substitui aquela. Ela fica guardada como {backup} na mesma pasta, então nada se perde de vez."
                 ));
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(theme::primary_button("Save my version")).clicked() {
+                    if ui.add(theme::primary_button("Salvar a minha versão")).clicked() {
                         keep_mine = true;
                     }
                     if ui
                         .add(egui::Button::new(without_saving).min_size(egui::vec2(0.0, 34.0)))
-                        .on_hover_text("Your changes since the last save are lost. Unlock again to see the other version.")
+                        .on_hover_text("As suas alterações desde o último salvamento serão perdidas. Desbloqueie de novo para ver a outra versão.")
                         .clicked()
                     {
                         discard = true;
@@ -1082,20 +1127,20 @@ impl Session {
                 ui.set_width(460.0);
                 ui.horizontal(|ui| {
                     theme::icon_badge(ui, icons::WARNING, theme::RED, 40.0);
-                    ui.label(theme::serif("Not saved yet", 22.0));
+                    ui.label(theme::serif("Ainda não salvo", 22.0));
                 });
                 ui.add_space(4.0);
-                let what = if leave == Leave::Quit { "close" } else { "lock" };
-                ui.label(format!("Supervisor couldn't save your latest changes, so it didn't {what}:"));
+                let what = if leave == Leave::Quit { "fechou" } else { "bloqueou" };
+                ui.label(format!("O Supervisor não conseguiu salvar as últimas alterações, por isso não {what}:"));
                 ui.label(RichText::new(err).small().color(theme::muted(ui)));
                 ui.add_space(4.0);
-                ui.label("It keeps trying. If the data file is on a network or USB drive, check that it's connected.");
+                ui.label("Ele continua tentando. Se o arquivo de dados está numa unidade de rede ou num pendrive, verifique se está conectado.");
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(theme::primary_button("Try again")).clicked() {
+                    if ui.add(theme::primary_button("Tentar de novo")).clicked() {
                         retry = true;
                     }
-                    if ui.add(egui::Button::new("Keep working").min_size(egui::vec2(0.0, 34.0))).clicked() {
+                    if ui.add(egui::Button::new("Continuar trabalhando").min_size(egui::vec2(0.0, 34.0))).clicked() {
                         stay = true;
                     }
                     if ui.add(theme::danger_button(without_saving)).clicked() {
@@ -1120,27 +1165,27 @@ impl Session {
                 ui.set_width(500.0);
                 ui.horizontal(|ui| {
                     theme::icon_badge(ui, icons::KEY, theme::ACCENT, 40.0);
-                    ui.label(theme::serif("Back up your key file", 24.0));
+                    ui.label(theme::serif("Faça backup do arquivo-chave", 24.0));
                 });
                 ui.add_space(6.0);
-                ui.label("Your key file is saved on this computer at:");
+                ui.label("O seu arquivo-chave está salvo neste computador em:");
                 ui.label(RichText::new(setup.path.display().to_string()).small().color(theme::muted(ui)));
                 ui.add_space(6.0);
                 ui.label(
-                    "Save a backup copy before turning it on. Keep it somewhere safe and away from your data file: \
-                     a USB stick, or as an attachment in a password manager such as KeePassXC or Bitwarden. \
-                     You'll also need it to use Supervisor on another computer.",
+                    "Salve uma cópia de backup antes de ativá-lo. Guarde-a num lugar seguro e longe do arquivo de dados: \
+                     um pendrive, ou como anexo num gerenciador de senhas como KeePassXC ou Bitwarden. \
+                     Você também vai precisar dela para usar o Supervisor em outro computador.",
                 );
                 ui.add_space(4.0);
                 ui.colored_label(
                     theme::fg(ui, theme::AMBER),
-                    "Without the key file your data can't be opened, even with the right password.",
+                    "Sem o arquivo-chave, os dados não podem ser abertos, mesmo com a senha certa.",
                 );
                 ui.add_space(10.0);
-                if ui.button(format!("{} Save backup copy…", icons::EXPORT)).clicked()
+                if ui.button(format!("{} Salvar cópia de backup…", icons::EXPORT)).clicked()
                     && let Some(dest) = rfd::FileDialog::new()
-                        .set_title("Save a backup copy of your key file")
-                        .set_file_name("supervisor-key.bin")
+                        .set_title("Salvar uma cópia de backup do arquivo-chave")
+                        .set_file_name("supervisor-br-chave.bin")
                         .save_file()
                 {
                     match storage::save_key_backup(&setup.key, &dest, &data_file) {
@@ -1154,7 +1199,7 @@ impl Session {
                 if let Some(dest) = &setup.backup {
                     ui.colored_label(
                         theme::fg(ui, theme::GREEN),
-                        format!("{} Backup saved to {}", icons::CHECK_CIRCLE, dest.display()),
+                        format!("{} Backup salvo em {}", icons::CHECK_CIRCLE, dest.display()),
                     );
                 }
                 if let Some(e) = &setup.error {
@@ -1163,13 +1208,13 @@ impl Session {
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add_enabled(setup.backup.is_some(), theme::primary_button("Turn on key file"))
-                        .on_disabled_hover_text("Save a backup copy first")
+                        .add_enabled(setup.backup.is_some(), theme::primary_button("Ativar arquivo-chave"))
+                        .on_disabled_hover_text("Salve uma cópia de backup primeiro")
                         .clicked()
                     {
                         turn_on = true;
                     }
-                    if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 34.0))).clicked() {
+                    if ui.add(egui::Button::new("Cancelar").min_size(egui::vec2(0.0, 34.0))).clicked() {
                         cancel = true;
                     }
                 });
@@ -1184,71 +1229,77 @@ impl Session {
         if let Some(n) = &mut self.new_student {
             let mut create = false;
             let mut cancel = false;
-            let dup = self.db.b_number_taken(&n.student.b_number, None);
+            let dup = self.db.enrollment_taken(&n.student.enrollment, None);
             let resp = egui::Modal::new(Id::unique("new-student")).frame(theme::modal_frame(ui)).show(&ctx, |ui| {
-                ui.set_width(460.0);
+                ui.set_width(500.0);
                 ui.horizontal(|ui| {
                     theme::icon_badge(ui, icons::STUDENT, theme::ACCENT, 40.0);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        ui.label(theme::serif("Add student", 24.0));
-                        ui.label(RichText::new("Details can be completed later in the side panel.").small().color(theme::muted(ui)));
+                        ui.label(theme::serif("Adicionar aluno", 24.0));
+                        ui.label(RichText::new("Os detalhes podem ser completados depois no painel lateral.").small().color(theme::muted(ui)));
                     });
                 });
                 ui.add_space(10.0);
                 crate::ui::widgets::form_grid(ui, "new-grid", |ui| {
                     let s = &mut n.student;
-                    ui.label("B Number");
+                    ui.label("Matrícula");
                     ui.vertical(|ui| {
-                        crate::ui::widgets::text_field(ui, &mut s.b_number, "B00123456");
+                        crate::ui::widgets::text_field(ui, &mut s.enrollment, "Matrícula ou CPF");
                         if dup {
-                            ui.colored_label(theme::fg(ui, theme::AMBER), format!("{} Already exists", icons::WARNING));
+                            ui.colored_label(theme::fg(ui, theme::AMBER), format!("{} Já existe", icons::WARNING));
                         }
                     });
                     ui.end_row();
-                    ui.label("Name");
-                    crate::ui::widgets::text_field(ui, &mut s.name, "Full name");
+                    ui.label("Nome");
+                    crate::ui::widgets::text_field(ui, &mut s.name, "Nome completo");
                     ui.end_row();
-                    ui.label("Email");
-                    crate::ui::widgets::text_field(ui, &mut s.email, "University email");
+                    ui.label("E-mail");
+                    crate::ui::widgets::text_field(ui, &mut s.email, "E-mail institucional");
                     ui.end_row();
-                    ui.label("Course");
-                    crate::ui::widgets::text_field(ui, &mut s.course, "Course");
+                    ui.label("Curso");
+                    crate::ui::widgets::text_field(ui, &mut s.course, "Curso");
                     ui.end_row();
                 });
                 ui.add_space(8.0);
-                theme::card_title(ui, "Roles");
-                ui.checkbox(&mut n.fyp, "Project student (FYP)");
-                if n.fyp {
-                    ui.indent("fyp-kind", |ui| {
+                theme::card_title(ui, "Vínculos");
+                ui.label(RichText::new("GRADUAÇÃO").small().color(theme::muted(ui)));
+                ui.checkbox(&mut n.tcc, "Aluno de TCC");
+                if n.tcc && self.db.settings.programmes.len() > 1 {
+                    ui.indent("tcc-course", |ui| {
                         for p in &self.db.settings.programmes {
                             ui.radio_value(&mut n.programme, p.id.clone(), &p.name);
                         }
                     });
                 }
-                ui.checkbox(&mut n.phd, "Research student (PhD / MSc)");
-                if n.phd {
-                    ui.indent("research-kind", |ui| {
-                        for group in ResearchGroup::ALL {
-                            ui.radio_value(&mut n.research, group, group.label());
-                        }
-                    });
-                }
-                ui.checkbox(&mut n.placement, "Placement student");
+                ui.checkbox(&mut n.ic, "Iniciação científica (IC)");
+                ui.checkbox(&mut n.placement, "Estágio supervisionado");
                 if n.placement {
                     ui.indent("placement", |ui| {
-                        crate::ui::widgets::text_field(ui, &mut n.company, "Placement company");
-                        crate::ui::widgets::text_field(ui, &mut n.professional_email, "Professional email");
+                        crate::ui::widgets::text_field(ui, &mut n.company, "Empresa / concedente");
+                        crate::ui::widgets::text_field(ui, &mut n.professional_email, "E-mail na empresa");
                     });
                 }
-                ui.checkbox(&mut n.advisee, "Studies advisee");
+                ui.checkbox(&mut n.advisee, "Tutoria acadêmica");
+                ui.add_space(4.0);
+                ui.label(RichText::new("PÓS-GRADUAÇÃO").small().color(theme::muted(ui)));
+                ui.checkbox(&mut n.pos, "Aluno de pós-graduação");
+                if n.pos {
+                    ui.indent("pos-level", |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for level in Level::ALL {
+                                ui.radio_value(&mut n.level, level, level.label());
+                            }
+                        });
+                    });
+                }
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let valid = !n.student.name.trim().is_empty() || !n.student.b_number.trim().is_empty();
-                    if ui.add_enabled(valid, theme::primary_button("Create")).clicked() {
+                    let valid = !n.student.name.trim().is_empty() || !n.student.enrollment.trim().is_empty();
+                    if ui.add_enabled(valid, theme::primary_button("Criar")).clicked() {
                         create = true;
                     }
-                    if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 34.0))).clicked() {
+                    if ui.add(egui::Button::new("Cancelar").min_size(egui::vec2(0.0, 34.0))).clicked() {
                         cancel = true;
                     }
                 });
@@ -1262,18 +1313,76 @@ impl Session {
             }
         }
 
+        if let Some(prompt) = &mut self.reveal_prompt {
+            let name = self.db.student(prompt.student).map(|s| s.display_name()).unwrap_or_default();
+            let mut submit = false;
+            let mut cancel = false;
+            let resp = egui::Modal::new(Id::unique("reveal")).frame(theme::modal_frame(ui)).show(&ctx, |ui| {
+                ui.set_width(420.0);
+                ui.horizontal(|ui| {
+                    theme::icon_badge(ui, icons::EYE, theme::ACCENT, 40.0);
+                    ui.label(theme::serif("Revelar matrícula", 22.0));
+                });
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(format!("Digite a sua senha para ver a matrícula de {name}."))
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+                ui.add_space(6.0);
+                let field = widgets::password_field(
+                    ui,
+                    egui::TextEdit::singleline(&mut *prompt.password)
+                        .hint_text("Senha")
+                        .desired_width(f32::INFINITY),
+                );
+                if !field.has_focus() && prompt.password.is_empty() && prompt.error.is_none() {
+                    field.request_focus();
+                }
+                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    submit = true;
+                }
+                if let Some(e) = &prompt.error {
+                    ui.colored_label(theme::fg(ui, theme::RED), e);
+                }
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(theme::primary_button("Revelar")).clicked() {
+                        submit = true;
+                    }
+                    if ui.add(egui::Button::new("Cancelar").min_size(egui::vec2(0.0, 34.0))).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if submit && !prompt.password.is_empty() {
+                match self.vault.check_password(&prompt.password) {
+                    Ok(true) => {
+                        self.revealed = Some(prompt.student);
+                        self.reveal_prompt = None;
+                    }
+                    Ok(false) => {
+                        prompt.error = Some("Senha incorreta.".into());
+                        prompt.password = Zeroizing::new(String::new());
+                    }
+                    Err(e) => prompt.error = Some(format!("{e:#}")),
+                }
+            } else if cancel || resp.should_close() {
+                self.reveal_prompt = None;
+            }
+        }
+
         if let Some(confirm) = &self.confirm {
             let (title, body) = match confirm {
                 Confirm::DeleteStudent(id) => (
-                    "Delete student?".to_string(),
+                    "Excluir aluno?".to_string(),
                     format!(
-                        "Permanently delete {} and all their records?",
+                        "Excluir definitivamente {} e todos os seus registros?",
                         self.db.student(*id).map(|s| s.display_name()).unwrap_or_default()
                     ),
                 ),
                 Confirm::RemoveRole(_, role) => (
-                    format!("Remove {} record?", role.label()),
-                    "All dates and notes in this section will be lost.".to_string(),
+                    format!("Remover registro de {}?", role.label()),
+                    "Todas as datas e anotações desta seção serão perdidas.".to_string(),
                 ),
             };
             let mut yes = false;
@@ -1288,10 +1397,10 @@ impl Session {
                 ui.label(body);
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(theme::danger_button("Delete")).clicked() {
+                    if ui.add(theme::danger_button("Excluir")).clicked() {
                         yes = true;
                     }
-                    if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 34.0))).clicked() {
+                    if ui.add(egui::Button::new("Cancelar").min_size(egui::vec2(0.0, 34.0))).clicked() {
                         no = true;
                     }
                 });
@@ -1305,8 +1414,9 @@ impl Session {
                     Confirm::RemoveRole(id, role) => {
                         if let Some(s) = self.db.student_mut(id) {
                             match role {
-                                Role::Fyp => s.fyp = None,
-                                Role::Phd => s.phd = None,
+                                Role::Tcc => s.tcc = None,
+                                Role::Ic => s.ic = None,
+                                Role::Pos => s.pos = None,
                                 Role::Placement => s.placement = None,
                                 Role::Advisee => s.advisee = None,
                             }
@@ -1329,9 +1439,11 @@ mod ui_tests {
     use chrono::{Datelike, Duration as Days, NaiveTime};
     use egui::accesskit::Role as AkRole;
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
-    const PASSWORD: &str = "test-password-123";
+    const PASSWORD: &str = "senha-de-teste-123";
+    /// A made-up CPF with valid check digits, used in examples.
+    const CPF: &str = "529.982.247-25";
 
     fn session<'s>(h: &'s mut Harness<'_, SupervisorApp>) -> &'s mut Session {
         match &mut h.state_mut().screen {
@@ -1378,6 +1490,8 @@ mod ui_tests {
         matches!(&app.screen, Screen::Unlocked(s) if s.saving.is_none() && want(&s.status))
     }
 
+    /// Fictional students for the screenshots: names, e-mails and companies
+    /// are made up, and the institution is "exemplo.edu.br".
     fn demo_students(today: chrono::NaiveDate) -> Vec<Student> {
         let t = |h| NaiveTime::from_hms_opt(h, 0, 0);
         let meeting = |days: i64, held: bool, notes: &str| Meeting {
@@ -1387,21 +1501,68 @@ mod ui_tests {
             notes: notes.into(),
             ..Default::default()
         };
+        let due = |days: i64| Milestone {
+            deadline: Some(today + Days::days(days)),
+            ..Default::default()
+        };
+        let mut doctorate = PosRecord {
+            title: "Compósitos autorreparáveis para pás de turbinas eólicas".into(),
+            program: "PPG em Engenharia Mecânica".into(),
+            co_supervisors: "Profa. Coorientadora Exemplo".into(),
+            start: Some(today - Days::days(400)),
+            grant: Grant {
+                agency: "CAPES".into(),
+                modality: "Demanda Social".into(),
+                ..Default::default()
+            },
+            meetings: vec![Meeting {
+                online: true,
+                platform: Platform::GoogleMeet,
+                link: "https://meet.google.com/abc-defg-hij".into(),
+                repeat: Some(Repeat {
+                    every_weeks: 2,
+                    ..Default::default()
+                }),
+                ..meeting(2, false, "")
+            }],
+            ..PosRecord::new(Level::DoutoradoAcademico)
+        };
+        doctorate.suggest(&LevelRule::default_for(doctorate.level));
+        let report = &mut doctorate.annual_reports[0];
+        report.done = true;
+        report.done_on = report.deadline.map(|d| d - Days::days(5));
+        let mut masters = PosRecord {
+            title: "Gêmeos digitais para manutenção preditiva".into(),
+            program: "PPG em Engenharia de Produção".into(),
+            start: Some(today - Days::days(300)),
+            grant: Grant {
+                agency: "FACEPE".into(),
+                ..Default::default()
+            },
+            ..PosRecord::new(Level::MestradoAcademico)
+        };
+        masters.suggest(&LevelRule::default_for(masters.level));
+        let mut ic = IcRecord {
+            title: "Análise de vibrações em estruturas leves".into(),
+            project: "Monitoramento estrutural com sensores de baixo custo".into(),
+            ..IcRecord::new()
+        };
+        ic.grant.start = Some(today - Days::days(150));
+        ic.suggest();
         vec![
             Student {
-                b_number: "B00912345".into(),
-                name: "Aisha Khan".into(),
-                email: "khan-a@uni.ac.uk".into(),
-                course: "BEng Mechanical Engineering".into(),
-                fyp: Some(FypRecord {
-                    programme: "BEng".into(),
-                    project_title: "Topology-optimised drone arm".into(),
+                enrollment: CPF.into(),
+                name: "Beatriz Almeida".into(),
+                email: "beatriz.almeida@exemplo.edu.br".into(),
+                course: "Engenharia Mecânica".into(),
+                tcc: Some(TccRecord {
+                    title: "Braço de drone com otimização topológica".into(),
                     initial_contact: true,
                     initial_contact_on: Some(today - Days::days(30)),
                     meetings: vec![
-                        meeting(-14, true, "Agreed scope."),
+                        meeting(-14, true, "Escopo definido."),
                         Meeting {
-                            location: "MG.201".into(),
+                            location: "Sala 201 – Bloco B".into(),
                             repeat: Some(Repeat {
                                 exceptions: vec![Occurrence {
                                     planned: today + Days::days(10),
@@ -1421,10 +1582,10 @@ mod ui_tests {
                         reply: ReplyStatus::Replied,
                         replied_on: Some(today - Days::days(18)),
                         meetings: vec![
-                            meeting(-10, true, "Settling in well."),
+                            meeting(-10, true, "Adaptação tranquila."),
                             Meeting {
                                 online: true,
-                                ..meeting(5, false, "Follow-on requested")
+                                ..meeting(5, false, "Pediu uma reunião de retorno")
                             },
                         ],
                     },
@@ -1433,34 +1594,31 @@ mod ui_tests {
                 ..Default::default()
             },
             Student {
-                b_number: "B00987654".into(),
-                name: "Tom Murphy".into(),
-                course: "MEng Electrical Engineering".into(),
-                fyp: Some(FypRecord {
-                    programme: "MEngGermany".into(),
-                    ..Default::default()
-                }),
+                enrollment: "2022104587".into(),
+                name: "Lucas Ferreira".into(),
+                course: "Engenharia de Produção".into(),
+                tcc: Some(TccRecord::default()),
                 ..Default::default()
             },
             Student {
-                b_number: "SUST-2026-01".into(),
-                name: "Li Wei".into(),
-                course: "BEng (SUST)".into(),
-                fyp: Some(FypRecord {
-                    programme: "Sust".into(),
-                    initial_contact: true,
-                    ..Default::default()
-                }),
+                enrollment: "2023100912".into(),
+                name: "Júlia Ribeiro".into(),
+                email: "julia.ribeiro@exemplo.edu.br".into(),
+                course: "Engenharia Mecânica".into(),
+                ic: Some(ic),
                 ..Default::default()
             },
             Student {
-                b_number: "B00876543".into(),
-                name: "Ciara Doyle".into(),
-                course: "BEng Mechanical Engineering".into(),
+                enrollment: "2021107733".into(),
+                name: "Rafael Souza".into(),
+                course: "Engenharia Mecânica".into(),
                 placement: Some(PlacementRecord {
-                    company: "Bombardier".into(),
-                    professional_email: "ciara.doyle@company.com".into(),
-                    line_manager_name: "J. Smith".into(),
+                    company: "Metalúrgica Exemplo Ltda.".into(),
+                    professional_email: "rafael.souza@empresa.com.br".into(),
+                    line_manager_name: "Supervisora Exemplo".into(),
+                    tce_start: Some(today - Days::days(60)),
+                    tce_end: Some(today + Days::days(120)),
+                    report: due(90),
                     visits: [
                         Visit {
                             request_sent: Some(today - Days::days(7)),
@@ -1479,9 +1637,9 @@ mod ui_tests {
                 ..Default::default()
             },
             Student {
-                b_number: "B00765432".into(),
-                name: "Sean O'Neill".into(),
-                course: "BEng Electrical Engineering".into(),
+                enrollment: "2024101208".into(),
+                name: "Camila Santos".into(),
+                course: "Engenharia Elétrica".into(),
                 advisee: Some(AdviseeRecord {
                     s1: SemesterContact {
                         contacted_on: Some(today - Days::days(21)),
@@ -1493,42 +1651,19 @@ mod ui_tests {
                 ..Default::default()
             },
             Student {
-                b_number: "B00654321".into(),
-                name: "Priya Raman".into(),
-                email: "raman-p@uni.ac.uk".into(),
-                course: "PhD Engineering".into(),
-                phd: Some(PhdRecord {
-                    title: "Self-healing composites for wind turbine blades".into(),
-                    chair: "Prof. A. Byrne".into(),
-                    fee_status: FeeStatus::Overseas,
-                    visa: VisaType::Student,
-                    visa_start: Some(today - Days::days(60)),
-                    visa_end: Some(today + Days::days(1420)),
-                    funder: Funder::DfeQr,
-                    start: Some(today - Days::days(40)),
-                    end: Some(today + Days::days(1055)),
-                    initial: Milestone {
-                        deadline: Some(today + Days::days(130)),
-                        ..Default::default()
-                    },
-                    confirmation: Milestone {
-                        deadline: Some(today + Days::days(405)),
-                        ..Default::default()
-                    },
-                    annual_reports: vec![Milestone {
-                        deadline: Some(today + Days::days(25)),
-                        ..Default::default()
-                    }],
-                    meetings: vec![Meeting {
-                        online: true,
-                        repeat: Some(Repeat {
-                            every_weeks: 2,
-                            ..Default::default()
-                        }),
-                        ..meeting(2, false, "")
-                    }],
-                    ..Default::default()
-                }),
+                enrollment: "20250031".into(),
+                name: "Mariana Costa".into(),
+                email: "mariana.costa@exemplo.edu.br".into(),
+                course: "Doutorado em Engenharia Mecânica".into(),
+                pos: Some(doctorate),
+                ..Default::default()
+            },
+            Student {
+                enrollment: "20250117".into(),
+                name: "Pedro Oliveira".into(),
+                email: "pedro.oliveira@exemplo.edu.br".into(),
+                course: "Mestrado em Engenharia de Produção".into(),
+                pos: Some(masters),
                 ..Default::default()
             },
         ]
@@ -1542,7 +1677,7 @@ mod ui_tests {
             .build_eframe(move |cc| SupervisorApp::new(cc, Some(p)));
         h.run_steps(2);
         if shots {
-            shot(&mut h, "01_create_password");
+            shot(&mut h, "01_criar_senha");
         }
 
         // First run: create the password. A short one is refused first.
@@ -1555,10 +1690,10 @@ mod ui_tests {
                 field.type_text(text);
             }
             h.run_steps(1);
-            h.get_by_label("Create & unlock").click();
+            h.get_by_label("Criar e desbloquear").click();
             h.run_steps(2);
             if text == start {
-                assert!(h.query_by_label_contains("at least 12 characters").is_some());
+                assert!(h.query_by_label_contains("pelo menos 12 caracteres").is_some());
                 assert!(!path.exists());
             }
         }
@@ -1568,6 +1703,25 @@ mod ui_tests {
         h
     }
 
+    /// Unlocked, with the demo students and the semester dates set.
+    fn demo(path: &std::path::Path) -> Harness<'static, SupervisorApp> {
+        let mut h = create_and_unlock(path, false);
+        let today = crate::ui::widgets::today();
+        {
+            let s = session(&mut h);
+            s.db.settings.sem2_start = Some(today - Days::days(30));
+            s.db.settings.my_name = "Prof. Exemplo".into();
+            s.db.students.extend(demo_students(today));
+        }
+        h.key_press(egui::Key::F20);
+        h.run_steps(2);
+        h
+    }
+
+    fn id_of(h: &mut Harness<'_, SupervisorApp>, name: &str) -> Uuid {
+        session(h).db.students.iter().find(|s| s.name == name).unwrap().id
+    }
+
     #[test]
     fn end_to_end() {
         let dir = tempfile::tempdir().unwrap();
@@ -1575,30 +1729,30 @@ mod ui_tests {
         let mut h = create_and_unlock(&path, true);
 
         // Add a student through the dialog.
-        h.get_by_label("Placement").click();
+        h.get_by_label("Estágio").click();
         h.run_steps(2);
-        h.get_by_label(&format!("{}  Add student", icons::PLUS)).click();
+        h.get_by_label(&format!("{}  Adicionar aluno", icons::PLUS)).click();
         h.run_steps(2);
-        shot(&mut h, "02_add_student_dialog");
+        shot(&mut h, "02_adicionar_aluno");
         let inputs = h.get_all_by_role(AkRole::TextInput).collect::<Vec<_>>();
-        // The list's search box, then the dialog's B number, name, email,
-        // course, company and professional email.
+        // The list's search box, then the dialog's matrícula, name, email,
+        // course, company and company email.
         assert_eq!(inputs.len(), 7);
         inputs[1].focus();
-        inputs[1].type_text("B00111222");
+        inputs[1].type_text("2026000123");
         inputs[2].focus();
-        inputs[2].type_text("Niamh Kelly");
+        inputs[2].type_text("Aluno Novo");
         h.run_steps(1);
-        h.get_by_label("Create").click();
+        h.get_by_label("Criar").click();
         h.run_steps(2);
         let created = session(&mut h)
             .db
             .students
             .iter()
-            .find(|s| s.name == "Niamh Kelly")
+            .find(|s| s.name == "Aluno Novo")
             .cloned()
             .expect("student created");
-        assert!(created.placement.is_some(), "Placement role preset from the view");
+        assert!(created.placement.is_some(), "Estágio preset from the view");
 
         // Autosave after the debounce: the encrypted file must contain the student.
         for _ in 0..90 {
@@ -1606,34 +1760,42 @@ mod ui_tests {
         }
         wait_until(&mut h, "autosave", all_saved);
         let saved = storage::read_database(&path, PASSWORD, None).unwrap();
-        assert!(saved.students.iter().any(|s| s.name == "Niamh Kelly"));
+        assert!(saved.students.iter().any(|s| s.name == "Aluno Novo"));
 
         // Seed richer data and capture each screen.
         let today = crate::ui::widgets::today();
         {
             let s = session(&mut h);
-            s.db.settings.sem1_start = Some(today - Days::days(30));
+            s.db.settings.sem2_start = Some(today - Days::days(30));
+            s.db.settings.my_name = "Prof. Exemplo".into();
+            s.db.students.retain(|s| s.name != "Aluno Novo");
             s.db.students.extend(demo_students(today));
             s.selected = None;
             s.view = View::Dashboard;
         }
         h.run_steps(2);
-        assert!(h.query_by_label_contains("no reply").is_some(), "dashboard attention list");
-        assert!(h.query_by_label_contains("Annual report").is_some(), "PhD reminder on the dashboard");
-        shot(&mut h, "03_dashboard");
+        assert!(h.query_by_label_contains("sem resposta").is_some(), "dashboard attention list");
+        assert!(h.query_by_label_contains("Bom").or(h.query_by_label_contains("Boa")).is_some(), "greeting");
+        shot(&mut h, "03_painel");
 
         for (view, name) in [
-            (View::Calendar, "04_calendar"),
-            (View::List(Category::Projects("BEng".into())), "04_fyp_beng"),
-            (View::List(Category::Placement), "05_placement"),
-            (View::List(Category::Advisee), "06_advisees"),
-            (View::List(Category::Research(ResearchGroup::Phd)), "11_phd"),
-            (View::Settings, "07_settings"),
+            (View::Calendar, "04_agenda"),
+            (View::List(Category::Tcc("TCC".into())), "05_tcc"),
+            (View::List(Category::Ic), "06_ic"),
+            (View::List(Category::Placement), "07_estagio"),
+            (View::List(Category::Advisee), "08_tutoria"),
+            (View::List(Category::Pos(PosGroup::Doutorado)), "09_doutorado"),
+            (View::Settings, "10_configuracoes"),
         ] {
             session(&mut h).view = view;
             h.run_steps(2);
             shot(&mut h, name);
         }
+        // Enrolment numbers are hidden in the lists.
+        session(&mut h).view = View::List(Category::All);
+        h.run_steps(2);
+        assert!(h.query_by_label(CPF).is_none(), "CPF not shown in the list");
+        assert!(h.query_by_label("•••.•••.•••-••").is_some());
 
         // Month grid: clicking an item selects it for export.
         {
@@ -1643,89 +1805,331 @@ mod ui_tests {
             s.calendar.month = (today + Days::days(3)).with_day(1).unwrap();
         }
         h.run_steps(3);
-        shot(&mut h, "04_calendar_month");
-        h.get_all_by_label_contains("Aisha Khan").next().expect("meeting in month grid").click();
+        shot(&mut h, "04_agenda_mes");
+        h.get_all_by_label_contains("Beatriz Almeida").next().expect("meeting in month grid").click();
         h.run_steps(2);
         assert_eq!(session(&mut h).calendar.selected.len(), 1);
         assert!(session(&mut h).db.settings.export_with_guests, "guests on by default");
 
         // Detail panels.
-        let id_of = |h: &mut Harness<'_, SupervisorApp>, name: &str| {
-            session(h).db.students.iter().find(|s| s.name == name).unwrap().id
-        };
-        let aisha = id_of(&mut h, "Aisha Khan");
+        let beatriz = id_of(&mut h, "Beatriz Almeida");
         {
             let s = session(&mut h);
-            s.view = View::List(Category::Projects("BEng".into()));
-            s.selected = Some(aisha);
+            s.view = View::List(Category::Tcc("TCC".into()));
+            s.selected = Some(beatriz);
         }
         h.run_steps(2);
-        shot(&mut h, "08_fyp_detail");
-        let ciara = id_of(&mut h, "Ciara Doyle");
-        {
+        shot(&mut h, "11_detalhe_tcc");
+        for (name, view, file) in [
+            ("Rafael Souza", View::List(Category::Placement), "12_detalhe_estagio"),
+            ("Júlia Ribeiro", View::List(Category::Ic), "13_detalhe_ic"),
+            ("Mariana Costa", View::List(Category::Pos(PosGroup::Doutorado)), "14_detalhe_doutorado"),
+        ] {
+            let id = id_of(&mut h, name);
             let s = session(&mut h);
-            s.view = View::List(Category::Placement);
-            s.selected = Some(ciara);
+            s.view = view;
+            s.selected = Some(id);
+            h.run_steps(2);
+            shot(&mut h, file);
         }
-        h.run_steps(2);
-        shot(&mut h, "09_placement_detail");
-        let priya = id_of(&mut h, "Priya Raman");
-        {
-            let s = session(&mut h);
-            s.view = View::List(Category::Research(ResearchGroup::Phd));
-            s.selected = Some(priya);
-        }
-        h.run_steps(2);
-        shot(&mut h, "12_phd_detail");
-
-        // An external MSc: no standard assessments, its own deadline, a Google Meet.
-        {
-            let s = session(&mut h);
-            let mut p = ResearchGroup::MscExternal.new_record();
-            p.university = "UFERSA".into();
-            p.custom_steps.push(crate::model::CustomStep {
-                title: "Qualifying exam".into(),
-                milestone: crate::model::Milestone {
-                    deadline: Some(today + Days::days(10)),
-                    ..Default::default()
-                },
-                ..Default::default()
-            });
-            p.meetings.push(crate::model::Meeting {
-                date: Some(today + Days::days(2)),
-                online: true,
-                platform: crate::model::Platform::GoogleMeet,
-                link: "https://meet.google.com/abc-defg-hij".into(),
-                ..Default::default()
-            });
-            let ana = Student {
-                name: "Ana Souza".into(),
-                phd: Some(p),
-                ..Default::default()
-            };
-            s.selected = Some(ana.id);
-            s.db.students.push(ana);
-            s.view = View::List(Category::Research(ResearchGroup::MscExternal));
-        }
-        h.set_size(egui::vec2(1360.0, 1800.0));
+        // The whole doctorate panel, for the README.
+        h.set_size(egui::vec2(1360.0, 2300.0));
         h.run_steps(3);
-        shot(&mut h, "13_external_detail");
+        shot(&mut h, "15_detalhe_doutorado_completo");
         h.set_size(egui::vec2(1360.0, 860.0));
         h.run_steps(2);
 
         // Dark mode.
-        session(&mut h).db.settings.dark_mode = true;
-        session(&mut h).view = View::Dashboard;
+        {
+            let s = session(&mut h);
+            s.db.settings.dark_mode = true;
+            s.view = View::Dashboard;
+            s.selected = None;
+        }
         h.run_steps(3);
         assert!(h.ctx.global_style().visuals.dark_mode);
-        shot(&mut h, "10_dashboard_dark");
+        shot(&mut h, "16_painel_escuro");
+        {
+            let s = session(&mut h);
+            s.view = View::List(Category::Pos(PosGroup::Mestrado));
+            s.selected = Some(s.db.students.iter().find(|s| s.name == "Pedro Oliveira").unwrap().id);
+        }
+        h.run_steps(3);
+        shot(&mut h, "17_mestrado_escuro");
 
         // Lock: back to the unlock screen, and the right password reopens the data.
-        h.get_by_label(&format!("{}  Lock", icons::LOCK_SIMPLE)).click();
+        h.get_by_label(&format!("{}  Bloquear", icons::LOCK_SIMPLE)).click();
         wait_until(&mut h, "locked", locked);
+        shot(&mut h, "18_desbloquear");
         let (_, saved) = Vault::open(&path, PASSWORD, None).unwrap();
-        assert!(saved.students.iter().any(|s| s.name == "Ciara Doyle"));
+        assert!(saved.students.iter().any(|s| s.name == "Rafael Souza"));
         assert!(saved.settings.dark_mode);
+    }
+
+    /// Every label, value and description the screen exposes.
+    fn all_text(h: &Harness<'_, SupervisorApp>) -> String {
+        h.root()
+            .children_recursive()
+            .flat_map(|n| [n.accesskit_node().label(), n.accesskit_node().value()])
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn enrollment_is_hidden_until_revealed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = demo(&dir.path().join("data.svt"));
+        let beatriz = id_of(&mut h, "Beatriz Almeida");
+        let pedro = id_of(&mut h, "Pedro Oliveira");
+        {
+            let s = session(&mut h);
+            s.view = View::List(Category::Tcc("TCC".into()));
+            s.selected = Some(beatriz);
+        }
+        h.run_steps(2);
+        assert!(!all_text(&h).contains(CPF), "the CPF is nowhere on screen");
+        assert!(!all_text(&h).contains("52998224725"));
+        shot(&mut h, "19_matricula_oculta");
+
+        // Without the password option, one click reveals it.
+        h.get_by_label(&format!("{} Revelar", icons::EYE)).click();
+        h.run_steps(2);
+        assert!(all_text(&h).contains(CPF));
+        assert!(h.query_by_label_contains("É um CPF").is_some());
+        // Opening another student hides it again.
+        session(&mut h).selected = Some(pedro);
+        h.run_steps(2);
+        session(&mut h).selected = Some(beatriz);
+        h.run_steps(2);
+        assert!(!all_text(&h).contains(CPF), "hidden again after switching students");
+
+        // With the option on, revealing asks for the password.
+        session(&mut h).db.settings.reveal_needs_password = true;
+        h.run_steps(1);
+        h.get_by_label(&format!("{} Revelar", icons::EYE)).click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Revelar matrícula").is_some());
+        shot(&mut h, "20_revelar_com_senha");
+        let field = h.get_by_role(AkRole::PasswordInput);
+        field.focus();
+        field.type_text("senha-errada-000");
+        h.run_steps(1);
+        h.get_by_label("Revelar").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Senha incorreta.").is_some());
+        assert!(!all_text(&h).contains(CPF));
+        let field = h.get_by_role(AkRole::PasswordInput);
+        field.focus();
+        field.type_text(PASSWORD);
+        h.run_steps(1);
+        h.get_by_label("Revelar").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Revelar matrícula").is_none(), "dialog closed");
+        assert!(all_text(&h).contains(CPF));
+        h.get_by_label(&format!("{} Ocultar", icons::EYE_SLASH)).click();
+        h.run_steps(2);
+        assert!(!all_text(&h).contains(CPF));
+
+        // Turning the option off shows numbers everywhere.
+        session(&mut h).db.settings.hide_enrollment = false;
+        session(&mut h).view = View::List(Category::All);
+        h.run_steps(2);
+        assert!(all_text(&h).contains(CPF));
+    }
+
+    /// Widgets a person clicks or types into.
+    fn interactive(role: AkRole) -> bool {
+        matches!(
+            role,
+            AkRole::Button
+                | AkRole::TextInput
+                | AkRole::MultilineTextInput
+                | AkRole::PasswordInput
+                | AkRole::CheckBox
+                | AkRole::RadioButton
+                | AkRole::ComboBox
+                | AkRole::SpinButton
+                | AkRole::Slider
+                | AkRole::Link
+        )
+    }
+
+    /// Checks the screen for single-line text fields too narrow to use, and
+    /// for widgets drawn on top of each other. `skip_left` leaves out a
+    /// strip on the left (a sidebar that scrolls at small sizes).
+    fn check_layout(h: &Harness<'_, SupervisorApp>, screen: &str, skip_left: f32) -> usize {
+        let size = h.ctx.content_rect();
+        // What egui itself counts as visible of a widget: its rect cut by
+        // the panel or scroll area it is in.
+        let visible = |n: &egui_kittest::Node<'_>| {
+            let (node_id, _) = n.accesskit_node().locate();
+            // SAFETY: accesskit ids are egui ids, which are never zero.
+            let id = unsafe { egui::Id::from_high_entropy_bits(node_id.0) };
+            h.ctx.read_response(id).map_or(egui::Rect::NOTHING, |r| r.interact_rect)
+        };
+        let nodes: Vec<(AkRole, String, egui::Rect)> = h
+            .root()
+            .children_recursive()
+            .filter(|n| interactive(n.accesskit_node().role()) || n.accesskit_node().role() == AkRole::Label)
+            .filter(|n| n.rect() == visible(n))
+            .map(|n| {
+                let label = n.accesskit_node().label().or(n.accesskit_node().value()).unwrap_or_default();
+                (n.accesskit_node().role(), label, n.rect())
+            })
+            // Drawn and fully inside the window (not scrolled or clipped out of view).
+            .filter(|(_, _, r)| r.width() > 0.5 && r.height() > 0.5 && size.contains_rect(*r) && r.min.x >= skip_left)
+            .collect();
+        let checked = nodes.iter().filter(|(role, _, _)| interactive(*role)).count();
+        assert!(checked >= 1, "{screen}: no widgets visible – is the check looking at the screen?");
+        for (role, label, r) in &nodes {
+            if matches!(role, AkRole::TextInput | AkRole::PasswordInput) {
+                assert!(
+                    r.width() >= 80.0 && r.height() >= 18.0,
+                    "{screen}: text field {label:?} is too small: {:.0}×{:.0}",
+                    r.width(),
+                    r.height()
+                );
+            }
+        }
+        for (i, (ra, la, a)) in nodes.iter().enumerate() {
+            for (rb, lb, b) in &nodes[i + 1..] {
+                if !(interactive(*ra) || interactive(*rb)) {
+                    continue;
+                }
+                let overlap = a.intersect(*b);
+                let nested = a.contains_rect(*b) || b.contains_rect(*a);
+                if overlap.width() > 2.0 && overlap.height() > 2.0 && !nested {
+                    panic!("{screen}: {ra:?} {la:?} {a:?} overlaps {rb:?} {lb:?} {b:?}");
+                }
+            }
+        }
+        checked
+    }
+
+    #[test]
+    fn no_tiny_fields_or_overlapping_widgets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = demo(&dir.path().join("data.svt"));
+        let students: Vec<(String, View)> = vec![
+            ("Beatriz Almeida".into(), View::List(Category::Tcc("TCC".into()))),
+            ("Júlia Ribeiro".into(), View::List(Category::Ic)),
+            ("Rafael Souza".into(), View::List(Category::Placement)),
+            ("Camila Santos".into(), View::List(Category::Advisee)),
+            ("Mariana Costa".into(), View::List(Category::Pos(PosGroup::Doutorado))),
+            ("Pedro Oliveira".into(), View::List(Category::Pos(PosGroup::Mestrado))),
+        ];
+        let mut checked = 0;
+        // Tall enough to see each whole panel, then the smallest window allowed.
+        for (size, skip_left) in [(egui::vec2(1360.0, 2600.0), 0.0), (egui::vec2(960.0, 600.0), theme::SIDEBAR_WIDTH + 4.0)] {
+            h.set_size(size);
+            for dark in [false, true] {
+                session(&mut h).db.settings.dark_mode = dark;
+                for view in [
+                    View::Dashboard,
+                    View::Calendar,
+                    View::Settings,
+                    View::List(Category::All),
+                    View::List(Category::Pos(PosGroup::LatoSensu)),
+                ] {
+                    let s = session(&mut h);
+                    s.selected = None;
+                    s.view = view.clone();
+                    h.run_steps(3);
+                    checked += check_layout(&h, &format!("{size:?} {:?}", std::mem::discriminant(&view)), skip_left);
+                }
+                {
+                    let s = session(&mut h);
+                    s.view = View::Calendar;
+                    s.calendar.layout = crate::ui::calendar::Layout::Month;
+                }
+                h.run_steps(3);
+                checked += check_layout(&h, "month", skip_left);
+                session(&mut h).calendar.layout = crate::ui::calendar::Layout::List;
+                for (name, view) in &students {
+                    let id = id_of(&mut h, name);
+                    let s = session(&mut h);
+                    s.view = view.clone();
+                    s.selected = Some(id);
+                    h.run_steps(3);
+                    checked += check_layout(&h, &format!("{size:?} detalhe de {name}"), skip_left);
+                }
+            }
+        }
+        assert!(checked > 1000, "only {checked} widgets checked in all");
+        // The add-student dialog with every role ticked.
+        h.set_size(egui::vec2(1360.0, 860.0));
+        let s = session(&mut h);
+        s.selected = None;
+        s.view = View::Dashboard;
+        let mut n = NewStudent::for_category(None, &s.db.settings);
+        (n.tcc, n.ic, n.pos, n.placement, n.advisee) = (true, true, true, true, true);
+        s.new_student = Some(n);
+        h.run_steps(3);
+        shot(&mut h, "21_adicionar_aluno_vinculos");
+        let modal = h.get_by_label("Adicionar aluno").rect();
+        assert!(modal.width() > 0.0);
+    }
+
+    #[test]
+    fn date_picker_in_portuguese() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = demo(&dir.path().join("data.svt"));
+        let mariana = id_of(&mut h, "Mariana Costa");
+        {
+            let s = session(&mut h);
+            s.view = View::List(Category::Pos(PosGroup::Doutorado));
+            s.selected = Some(mariana);
+        }
+        h.set_size(egui::vec2(1360.0, 2300.0));
+        h.run_steps(3);
+        let start = session(&mut h).db.student(mariana).unwrap().pos.as_ref().unwrap().start.unwrap();
+        // The enrolment date (the grant, shown above it, starts the same day).
+        h.get_all_by_label(&format!("{}  {}", crate::pt::date(start), icons::CALENDAR_BLANK)).last().unwrap().click();
+        h.run_steps(2);
+        assert!(h.query_by_label(&crate::pt::month_year(start)).is_some(), "month in Portuguese");
+        shot(&mut h, "22_seletor_de_data");
+        // Every month name fits between the arrows (a year and a month
+        // forward each time, so all twelve show up).
+        let first = start.with_day(1).unwrap();
+        for i in 0..12 {
+            let month = first + chrono::Months::new(13 * i);
+            let prev = h.get_by_label(icons::CARET_LEFT).rect();
+            let label = h.get_by_label(&crate::pt::month_year(month)).rect();
+            let next = h.get_by_label(icons::CARET_RIGHT).rect();
+            let name = crate::pt::month_year(month);
+            let text = h.ctx.fonts_mut(|f| f.layout_no_wrap(name.clone(), theme::semibold_font(14.0), egui::Color32::WHITE).size().x);
+            assert!(
+                label.min.x >= prev.max.x && label.max.x <= next.min.x && text <= label.width(),
+                "{name} ({text:.0}px) doesn't fit between the arrows ({:.0}px)",
+                label.width()
+            );
+            // One- and two-digit days take the same room, so the columns
+            // stay under the weekday initials.
+            let widths: Vec<f32> = (0..28)
+                .map(|d| h.get_by_label(&crate::pt::date(month + chrono::Duration::days(d))).rect().width())
+                .collect();
+            assert!(widths.iter().all(|w| (w - widths[0]).abs() < 0.5), "day widths differ: {widths:?}");
+            h.get_by_label("»").click();
+            h.run_steps(1);
+            h.get_by_label(icons::CARET_RIGHT).click();
+            h.run_steps(2);
+        }
+        for _ in 0..13 {
+            h.get_by_label("«").click();
+            h.run_steps(1);
+        }
+        h.run_steps(1);
+        assert!(h.query_by_label(&crate::pt::month_year(start)).is_some(), "back to the start");
+        // Next month, then the 10th.
+        h.get_by_label(icons::CARET_RIGHT).click();
+        h.run_steps(1);
+        let target = (start.with_day(1).unwrap() + chrono::Months::new(1)).with_day(10).unwrap();
+        h.get_by_label(&crate::pt::date(target)).click();
+        h.run_steps(2);
+        let p = session(&mut h).db.student(mariana).unwrap().pos.clone().unwrap();
+        assert_eq!(p.start, Some(target));
+        assert!(h.query_by_label(&crate::pt::month_year(start)).is_none(), "picker closed");
     }
 
     fn unlock(h: &mut Harness<'_, SupervisorApp>) {
@@ -1733,7 +2137,7 @@ mod ui_tests {
         field.focus();
         field.type_text(PASSWORD);
         h.run_steps(1);
-        h.get_by_label("Unlock").click();
+        h.get_by_label("Desbloquear").click();
         wait_unlocked(h);
         h.run_steps(2);
     }
@@ -1747,19 +2151,19 @@ mod ui_tests {
         // Saving fails (a folder is in the backup's way): Lock must not drop the edit.
         let bak = dir.path().join("data.svt.bak");
         std::fs::create_dir_all(bak.join("blocker")).unwrap();
-        session(&mut h).db.settings.my_name = "Unsaved edit".into();
+        session(&mut h).db.settings.my_name = "Edição não salva".into();
         h.run_steps(1);
-        h.get_by_label(&format!("{}  Lock", icons::LOCK_SIMPLE)).click();
+        h.get_by_label(&format!("{}  Bloquear", icons::LOCK_SIMPLE)).click();
         wait_until(&mut h, "save failed", |app| status_is(app, |s| matches!(s, SaveStatus::Error(_))));
         h.run_steps(2);
         assert!(matches!(h.state().screen, Screen::Unlocked(_)), "stays unlocked when saving fails");
-        assert!(h.query_by_label("Not saved yet").is_some());
+        assert!(h.query_by_label("Ainda não salvo").is_some());
 
         // Once saving works again, Try again saves and locks.
         std::fs::remove_dir_all(&bak).unwrap();
-        h.get_by_label("Try again").click();
+        h.get_by_label("Tentar de novo").click();
         wait_until(&mut h, "locked", locked);
-        assert_eq!(storage::read_database(&path, PASSWORD, None).unwrap().settings.my_name, "Unsaved edit");
+        assert_eq!(storage::read_database(&path, PASSWORD, None).unwrap().settings.my_name, "Edição não salva");
 
         // Idle for longer than the auto-lock time: locks by itself.
         unlock(&mut h);
@@ -1779,7 +2183,7 @@ mod ui_tests {
 
         // Another computer saves the file (simulated by writing other bytes).
         std::fs::write(&path, b"someone else's version").unwrap();
-        session(&mut h).db.settings.my_name = "Mine".into();
+        session(&mut h).db.settings.my_name = "Minha".into();
         // Edits are only looked for on frames with input, as typing would give.
         h.key_press(egui::Key::F20);
         for _ in 0..90 {
@@ -1788,11 +2192,11 @@ mod ui_tests {
         wait_until(&mut h, "conflict", |app| status_is(app, |s| matches!(s, SaveStatus::Conflict)));
         h.run_steps(2);
         assert_eq!(std::fs::read(&path).unwrap(), b"someone else's version", "not overwritten");
-        assert!(h.query_by_label("Changed somewhere else").is_some());
+        assert!(h.query_by_label("Alterado em outro lugar").is_some());
 
-        h.get_by_label("Save my version").click();
+        h.get_by_label("Salvar a minha versão").click();
         h.run_steps(2);
-        assert_eq!(storage::read_database(&path, PASSWORD, None).unwrap().settings.my_name, "Mine");
+        assert_eq!(storage::read_database(&path, PASSWORD, None).unwrap().settings.my_name, "Minha");
         assert_eq!(std::fs::read(dir.path().join("data.svt.bak")).unwrap(), b"someone else's version");
     }
 
@@ -1804,19 +2208,19 @@ mod ui_tests {
         let ctx = h.ctx.clone();
         let now = ctx.input(|i| i.time);
         let s = session(&mut h);
-        s.db.settings.my_name = "First".into();
+        s.db.settings.my_name = "Primeira".into();
         s.detect_changes(now);
         s.save(&ctx);
         // Edited while that save is still running.
-        s.db.settings.my_name = "Second".into();
+        s.db.settings.my_name = "Segunda".into();
         s.detect_changes(now);
         s.poll_save(now, true);
-        assert_eq!(storage::read_database(&path, PASSWORD, None).unwrap().settings.my_name, "First");
+        assert_eq!(storage::read_database(&path, PASSWORD, None).unwrap().settings.my_name, "Primeira");
         assert!(matches!(s.status, SaveStatus::Pending), "the newer edit isn't saved yet");
         assert!(s.dirty_since.is_some());
 
         wait_until(&mut h, "second save", all_saved);
-        assert_eq!(storage::read_database(&path, PASSWORD, None).unwrap().settings.my_name, "Second");
+        assert_eq!(storage::read_database(&path, PASSWORD, None).unwrap().settings.my_name, "Segunda");
     }
 
     #[test]
@@ -1829,9 +2233,8 @@ mod ui_tests {
         {
             let s = session(&mut h);
             s.db.students.push(Student {
-                name: "Weekly Student".into(),
-                fyp: Some(FypRecord {
-                    programme: "BEng".into(),
+                name: "Aluno Semanal".into(),
+                tcc: Some(TccRecord {
                     meetings: vec![Meeting {
                         date: Some(first),
                         time: NaiveTime::from_hms_opt(10, 0, 0),
@@ -1851,13 +2254,13 @@ mod ui_tests {
         h.key_press(egui::Key::F20);
         h.run_steps(3);
         let week = |monday: chrono::NaiveDate| {
-            format!("{} – {}", monday.format("%d %b"), (monday + Days::days(6)).format("%d %b %Y"))
+            format!("{} – {}", crate::pt::day_month(monday), crate::pt::day_month_year(monday + Days::days(6)))
         };
         assert!(h.query_by_label(&week(first)).is_some(), "first week drawn");
         assert!(h.query_by_label(&week(last)).is_none(), "weeks out of view not drawn");
 
         // Selecting covers every week, drawn or not.
-        h.get_by_label("Select all shown").click();
+        h.get_by_label("Selecionar todos visíveis").click();
         h.run_steps(2);
         assert_eq!(session(&mut h).calendar.selected.len(), 60);
 
@@ -1892,39 +2295,39 @@ mod ui_tests {
 
         // Ctrl+S saves without waiting for a pause in typing: with no frames
         // run after the key's own, an autosave can't have happened.
-        session(&mut h).db.settings.my_name = "Checkpoint".into();
+        session(&mut h).db.settings.my_name = "Ponto de restauração".into();
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
         h.step();
         for _ in 0..100 {
-            if name_in(&path) == "Checkpoint" {
+            if name_in(&path) == "Ponto de restauração" {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(name_in(&path), "Checkpoint");
+        assert_eq!(name_in(&path), "Ponto de restauração");
         wait_until(&mut h, "saved", all_saved);
-        assert_eq!(name_in(&path), "Checkpoint");
+        assert_eq!(name_in(&path), "Ponto de restauração");
         assert_eq!(name_in(&bak), "", "the first save keeps the file as unlocked");
 
         // The next save keeps the version saved by hand as the backup.
-        edit(&mut h, "Later");
+        edit(&mut h, "Depois");
         for _ in 0..90 {
             h.run_steps(1);
         }
         wait_until(&mut h, "autosaved", all_saved);
-        assert_eq!(name_in(&path), "Later");
-        assert_eq!(name_in(&bak), "Checkpoint");
+        assert_eq!(name_in(&path), "Depois");
+        assert_eq!(name_in(&bak), "Ponto de restauração");
 
-        // With nothing left to save, clicking Saved does the same.
-        h.get_by_label(&format!("{} Saved", icons::FLOPPY_DISK)).click();
+        // With nothing left to save, clicking Salvo does the same.
+        h.get_by_label(&format!("{} Salvo", icons::FLOPPY_DISK)).click();
         h.run_steps(2);
-        assert!(h.query_by_label("Saved").is_some(), "confirmed");
-        edit(&mut h, "Latest");
+        assert!(h.query_by_label("Salvo").is_some(), "confirmed");
+        edit(&mut h, "Mais recente");
         for _ in 0..90 {
             h.run_steps(1);
         }
         wait_until(&mut h, "autosaved", all_saved);
-        assert_eq!(name_in(&bak), "Later");
+        assert_eq!(name_in(&bak), "Depois");
     }
 
     #[test]
@@ -1935,8 +2338,7 @@ mod ui_tests {
         let today = crate::ui::widgets::today();
         let student = |name: &str, days: i64, hour: u32| Student {
             name: name.into(),
-            fyp: Some(FypRecord {
-                programme: "BEng".into(),
+            tcc: Some(TccRecord {
                 meetings: vec![Meeting {
                     date: Some(today + Days::days(days)),
                     time: NaiveTime::from_hms_opt(hour, 0, 0),
@@ -1948,7 +2350,11 @@ mod ui_tests {
         };
         {
             let s = session(&mut h);
-            s.db.students.extend([student("Past Student", -2, 10), student("Late Student", -1, 9), student("Future Student", 3, 10)]);
+            s.db.students.extend([
+                student("Aluno Passado", -2, 10),
+                student("Aluno Atrasado", -1, 9),
+                student("Aluno Futuro", 3, 10),
+            ]);
             s.view = View::Calendar;
             s.calendar.range = crate::ui::calendar::Range::All;
         }
@@ -1956,50 +2362,53 @@ mod ui_tests {
         h.run_steps(3);
         let meeting = |h: &mut Harness<'_, SupervisorApp>, name: &str| {
             let s = session(h);
-            s.db.students.iter().find(|s| s.name == name).unwrap().fyp.as_ref().unwrap().meetings[0].clone()
+            s.db.students.iter().find(|s| s.name == name).unwrap().tcc.as_ref().unwrap().meetings[0].clone()
         };
 
-        // Only meetings whose time has come offer Held and Postpone.
-        let held = format!("{} Held", icons::CHECK);
+        // Only meetings whose time has come offer Realizada and Remarcar.
+        let held = format!("{} Realizada", icons::CHECK);
         assert_eq!(h.get_all_by_label(&held).count(), 2);
-        shot(&mut h, "13_calendar_past_meetings");
+        shot(&mut h, "23_agenda_reunioes_passadas");
         h.get_all_by_label(&held).next().unwrap().click();
         h.run_steps(2);
-        assert!(meeting(&mut h, "Past Student").held);
-        assert!(h.query_by_label("Marked as held").is_some());
+        assert!(meeting(&mut h, "Aluno Passado").held);
+        assert!(h.query_by_label("Marcada como realizada").is_some());
         assert_eq!(h.get_all_by_label(&held).count(), 1);
 
         // Postpone, picking the day in the date picker inside the dialog.
-        h.get_by_label("Postpone…").click();
+        h.get_by_label("Remarcar…").click();
         h.run_steps(2);
-        assert!(h.query_by_label("Postpone meeting").is_some());
+        assert!(h.query_by_label("Remarcar reunião").is_some());
         let suggested = today - Days::days(1) + Days::days(7);
-        h.get_by_label_contains(&suggested.format("%a %d %b %Y").to_string()).click();
+        h.get_by_label(&format!("{}  {}", crate::pt::date(suggested), icons::CALENDAR_BLANK)).click();
         h.run_steps(2);
-        shot(&mut h, "14_postpone_dialog");
-        h.get_by_label(">").click();
+        shot(&mut h, "24_dialogo_remarcar");
+        let next_day = suggested + Days::days(1);
+        if next_day.month() != suggested.month() {
+            h.get_by_label(icons::CARET_RIGHT).click();
+            h.run_steps(1);
+        }
+        h.get_by_label(&crate::pt::date(next_day)).click();
         h.run_steps(1);
-        h.get_by_label("Save").click();
-        h.run_steps(1);
-        h.get_by_label("Postpone").click();
+        h.get_by_label("Remarcar").click();
         h.run_steps(2);
-        let late = meeting(&mut h, "Late Student");
-        assert_eq!(late.date, Some(suggested + Days::days(1)));
+        let late = meeting(&mut h, "Aluno Atrasado");
+        assert_eq!(late.date, Some(next_day));
         assert_eq!(late.time, NaiveTime::from_hms_opt(9, 0, 0));
-        assert!(h.query_by_label("Postpone meeting").is_none());
+        assert!(h.query_by_label("Remarcar reunião").is_none());
 
-        // Month grid: right-click a past meeting to undo "held".
+        // Month grid: right-click a past meeting to undo "realizada".
         {
             let s = session(&mut h);
             s.calendar.layout = crate::ui::calendar::Layout::Month;
             s.calendar.month = (today - Days::days(2)).with_day(1).unwrap();
         }
         h.run_steps(2);
-        h.get_by_label_contains("Past Student").click_secondary();
+        h.get_by_label_contains("Aluno Passado").click_secondary();
         h.run_steps(2);
-        shot(&mut h, "15_month_meeting_menu");
-        h.get_by_label(&format!("{} Mark as not held", icons::X)).click();
+        shot(&mut h, "25_menu_reuniao_mes");
+        h.get_by_label(&format!("{} Marcar como não realizada", icons::X)).click();
         h.run_steps(2);
-        assert!(!meeting(&mut h, "Past Student").held);
+        assert!(!meeting(&mut h, "Aluno Passado").held);
     }
 }

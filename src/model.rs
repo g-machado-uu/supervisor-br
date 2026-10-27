@@ -1,4 +1,5 @@
-//! Data model: students, their roles (project, placement, advisee, PhD) and settings.
+//! Data model: students, their roles (TCC, iniciação científica, estágio,
+//! tutoria, pós-graduação), grants (bolsas) and settings.
 
 use std::collections::{HashMap, HashSet};
 
@@ -6,10 +7,16 @@ use chrono::{Datelike, Duration, Months, NaiveDate, NaiveTime};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::pt;
+
 pub const DB_VERSION: u32 = 1;
 
-/// How long before a PhD student's visa ends to flag it on the dashboard.
-const VISA_WARNING_DAYS: i64 = 90;
+/// How long before a grant (bolsa) ends to flag it on the dashboard.
+const GRANT_WARNING_DAYS: i64 = 90;
+/// ...and for how long after it ended.
+const GRANT_ENDED_DAYS: i64 = 30;
+/// How long before an internship agreement (TCE) ends to flag it.
+const TCE_WARNING_DAYS: i64 = 30;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -28,9 +35,9 @@ impl Semester {
 
     pub fn label(self) -> &'static str {
         match self {
-            Semester::S1 => "Semester 1",
-            Semester::S2 => "Semester 2",
-            Semester::FullYear => "Full year",
+            Semester::S1 => "1º semestre",
+            Semester::S2 => "2º semestre",
+            Semester::FullYear => "Anual",
         }
     }
 }
@@ -56,9 +63,9 @@ pub enum ReplyStatus {
 impl ReplyStatus {
     pub fn label(self) -> &'static str {
         match self {
-            ReplyStatus::Awaiting => "Awaiting reply",
-            ReplyStatus::Replied => "Replied",
-            ReplyStatus::NoReply => "No reply",
+            ReplyStatus::Awaiting => "Aguardando resposta",
+            ReplyStatus::Replied => "Respondeu",
+            ReplyStatus::NoReply => "Sem resposta",
         }
     }
 }
@@ -73,8 +80,8 @@ pub enum VisitMode {
 impl VisitMode {
     pub fn label(self) -> &'static str {
         match self {
-            VisitMode::Online => "Online",
-            VisitMode::FaceToFace => "Face-to-face",
+            VisitMode::Online => "On-line",
+            VisitMode::FaceToFace => "Presencial",
         }
     }
 }
@@ -83,31 +90,47 @@ impl VisitMode {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Platform {
     #[default]
-    Teams,
     GoogleMeet,
+    Teams,
+    Zoom,
+    /// Conferência Web of RNP, used by many Brazilian universities.
+    Rnp,
 }
 
 impl Platform {
-    pub const ALL: [Platform; 2] = [Platform::Teams, Platform::GoogleMeet];
+    pub const ALL: [Platform; 4] = [Platform::GoogleMeet, Platform::Teams, Platform::Zoom, Platform::Rnp];
 
     pub fn label(self) -> &'static str {
         match self {
-            Platform::Teams => "Teams",
             Platform::GoogleMeet => "Google Meet",
+            Platform::Teams => "Teams",
+            Platform::Zoom => "Zoom",
+            Platform::Rnp => "RNP",
+        }
+    }
+
+    /// Full name, for calendar files.
+    pub fn long_label(self) -> &'static str {
+        match self {
+            Platform::GoogleMeet => "Google Meet",
+            Platform::Teams => "Microsoft Teams",
+            Platform::Zoom => "Zoom",
+            Platform::Rnp => "Conferência Web RNP",
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Settings & modules
+// Settings, courses and disciplines
 // ---------------------------------------------------------------------------
 
+/// Something TCC students hand in (an "entrega"), set per discipline.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct CourseworkTemplate {
     pub id: Uuid,
     pub title: String,
-    /// Teaching week the coursework is due (relative to the semester start).
+    /// Teaching week the item is due (relative to the semester start).
     pub week: Option<u8>,
     /// An explicit deadline; takes precedence over `week`.
     pub deadline: Option<NaiveDate>,
@@ -117,7 +140,7 @@ impl Default for CourseworkTemplate {
     fn default() -> Self {
         Self {
             id: Uuid::new_v4(),
-            title: "New coursework".into(),
+            title: "Nova entrega".into(),
             week: None,
             deadline: None,
         }
@@ -143,6 +166,7 @@ impl CourseworkTemplate {
     }
 }
 
+/// A discipline (e.g. TCC I) with the items its students hand in.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Module {
@@ -150,7 +174,7 @@ pub struct Module {
     pub code: String,
     pub name: String,
     pub semester: Semester,
-    /// `Programme::id`s this module applies to.
+    /// `Programme::id`s this discipline applies to.
     pub applies_to: Vec<String>,
     pub courseworks: Vec<CourseworkTemplate>,
 }
@@ -159,8 +183,8 @@ impl Default for Module {
     fn default() -> Self {
         Self {
             id: Uuid::new_v4(),
-            code: "NEW".into(),
-            name: "New module".into(),
+            code: "NOVA".into(),
+            name: "Nova disciplina".into(),
             semester: Semester::S1,
             applies_to: Vec::new(),
             courseworks: Vec::new(),
@@ -168,12 +192,11 @@ impl Default for Module {
     }
 }
 
-/// A course whose project students are supervised (BEng, MEng, …).
+/// An undergraduate course whose TCC students are supervised.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Programme {
-    /// Key stored on students and modules. The built-in courses keep the
-    /// names of the old fixed list, so older data files load unchanged.
+    /// Key stored on students and disciplines.
     pub id: String,
     pub name: String,
     pub short: String,
@@ -185,45 +208,36 @@ impl Default for Programme {
     fn default() -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            name: "New course".into(),
-            short: "New".into(),
-            list: "Other".into(),
+            name: "Novo curso".into(),
+            short: "Novo".into(),
+            list: "TCC".into(),
         }
     }
 }
 
 impl Programme {
-    /// The sidebar list, "Other" when left blank.
+    /// The sidebar list, "TCC" when left blank.
     pub fn list_name(&self) -> &str {
         match self.list.trim() {
-            "" => "Other",
+            "" => "TCC",
             list => list,
         }
     }
 }
 
+/// One generic course to start from; rename it in Settings.
 pub fn default_programmes() -> Vec<Programme> {
-    let p = |id: &str, name: &str, short: &str, list: &str| Programme {
-        id: id.into(),
-        name: name.into(),
-        short: short.into(),
-        list: list.into(),
-    };
-    vec![
-        p("BEng", "BEng (MEC526 + MEC528)", "BEng", "BEng"),
-        p("MEng", "MEng (EEE840)", "MEng", "MEng"),
-        p(
-            "MEngGermany",
-            "MEng – Germany (EEE802)",
-            "MEng (DE)",
-            "MEng",
-        ),
-        p("Sust", "SUST (MEC526 + MEC528, China)", "SUST", "SUST"),
-    ]
+    vec![Programme {
+        id: "graduacao".into(),
+        name: "Bacharelado".into(),
+        short: "Grad.".into(),
+        list: "TCC".into(),
+    }]
 }
 
-/// Teaching weeks per semester when no end of teaching is set.
-pub const TEACHING_WEEKS: i64 = 12;
+/// Teaching weeks per semester when no end of teaching is set (a semester
+/// of 100 dias letivos is about 18 weeks).
+pub const TEACHING_WEEKS: i64 = 18;
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -231,7 +245,7 @@ pub struct Settings {
     pub academic_year: String,
     pub sem1_start: Option<NaiveDate>,
     pub sem2_start: Option<NaiveDate>,
-    /// Last day of teaching (exams follow); defaults to Friday of week 12.
+    /// Last day of teaching; defaults to Friday of week 18.
     pub sem1_teaching_end: Option<NaiveDate>,
     pub sem2_teaching_end: Option<NaiveDate>,
     pub programmes: Vec<Programme>,
@@ -247,12 +261,18 @@ pub struct Settings {
     pub export_with_guests: bool,
     /// Lock after this many minutes without input; 0 = never.
     pub auto_lock_minutes: u32,
+    /// Show enrolment numbers (often the CPF) as dots until revealed.
+    pub hide_enrollment: bool,
+    /// Revealing an enrolment number asks for the password again.
+    pub reveal_needs_password: bool,
+    /// Deadlines of each postgraduate level, in months from enrolment.
+    pub level_rules: Vec<LevelRule>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            academic_year: "2026/27".into(),
+            academic_year: "2026".into(),
             sem1_start: None,
             sem2_start: None,
             sem1_teaching_end: None,
@@ -266,67 +286,41 @@ impl Default for Settings {
             teams_link: String::new(),
             export_with_guests: true,
             auto_lock_minutes: 10,
+            hide_enrollment: true,
+            reveal_needs_password: false,
+            level_rules: default_level_rules(),
         }
     }
 }
 
+/// TCC I and TCC II, without dates: a starting point to edit in Settings.
 pub fn default_modules() -> Vec<Module> {
-    let module = |code: &str, name: &str, semester, programmes: &[&str], cws| Module {
+    let module = |code: &str, name: &str, semester, cws| Module {
         code: code.into(),
         name: name.into(),
         semester,
-        applies_to: programmes.iter().map(|p| p.to_string()).collect(),
+        applies_to: vec!["graduacao".into()],
         courseworks: cws,
         ..Default::default()
     };
     vec![
         module(
-            "MEC526",
-            "Research Methods and Management",
+            "TCC I",
+            "Trabalho de Conclusão de Curso I",
             Semester::S1,
-            &["BEng"],
             vec![
-                CourseworkTemplate::new("Coursework 1", Some(8)),
-                CourseworkTemplate::new("Coursework 2", Some(12)),
+                CourseworkTemplate::new("Projeto de TCC", None),
+                CourseworkTemplate::new("Apresentação do projeto", None),
             ],
         ),
         module(
-            "MEC528",
-            "BEng Hons Final Year Project",
+            "TCC II",
+            "Trabalho de Conclusão de Curso II",
             Semester::S2,
-            &["BEng"],
             vec![
-                CourseworkTemplate::new("Poster", None),
-                CourseworkTemplate::new("Coursework 2", None),
+                CourseworkTemplate::new("Versão para a banca", None),
+                CourseworkTemplate::new("Versão final corrigida", None),
             ],
-        ),
-        module(
-            "MEC526",
-            "Research Methods and Management (SUST)",
-            Semester::S1,
-            &["Sust"],
-            Vec::new(),
-        ),
-        module(
-            "MEC528",
-            "BEng Hons Final Year Project (SUST)",
-            Semester::S2,
-            &["Sust"],
-            Vec::new(),
-        ),
-        module(
-            "EEE840",
-            "MEng Final Year Dissertation",
-            Semester::FullYear,
-            &["MEng"],
-            Vec::new(),
-        ),
-        module(
-            "EEE802",
-            "MEng Final Year Dissertation",
-            Semester::FullYear,
-            &["MEngGermany"],
-            Vec::new(),
         ),
     ]
 }
@@ -345,16 +339,13 @@ impl Settings {
         monday + Duration::weeks(TEACHING_WEEKS - 1) + Duration::days(4)
     }
 
-    /// Last day of teaching: the date set in Settings, or Friday of week 12.
+    /// Last day of teaching: the date set in Settings, or Friday of week 18.
     pub fn teaching_end(&self, semester: Semester) -> Option<NaiveDate> {
         let end = match semester {
             Semester::S1 | Semester::FullYear => self.sem1_teaching_end,
             Semester::S2 => self.sem2_teaching_end,
         };
-        end.or_else(|| {
-            self.semester_start(semester)
-                .map(Self::default_teaching_end)
-        })
+        end.or_else(|| self.semester_start(semester).map(Self::default_teaching_end))
     }
 
     /// The semester a date belongs to (semester 2 once it has started).
@@ -382,7 +373,7 @@ impl Settings {
         cw.resolve_deadline(self.semester_start(module.semester))
     }
 
-    /// Deadline for one student, honouring a per-student override (extension).
+    /// Deadline for one student, honouring a per-student extension.
     pub fn effective_deadline(
         &self,
         module: &Module,
@@ -410,7 +401,7 @@ impl Settings {
             .map_or_else(|| id.to_string(), |p| p.short.clone())
     }
 
-    /// Sidebar lists of project students, in the order courses are defined.
+    /// Sidebar lists of TCC students, in the order courses are defined.
     pub fn programme_lists(&self) -> Vec<String> {
         let mut lists: Vec<String> = Vec::new();
         for p in &self.programmes {
@@ -420,10 +411,19 @@ impl Settings {
         }
         lists
     }
+
+    /// The deadlines in months for a postgraduate level.
+    pub fn rule(&self, level: Level) -> LevelRule {
+        self.level_rules
+            .iter()
+            .find(|r| r.level == level)
+            .cloned()
+            .unwrap_or_else(|| LevelRule::default_for(level))
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Student records
+// Meetings
 // ---------------------------------------------------------------------------
 
 /// Upper bound on the weeks generated for one repeating meeting.
@@ -438,8 +438,6 @@ pub struct Meeting {
     pub time: Option<NaiveTime>,
     /// For one-off meetings; repeating ones track this per week.
     pub held: bool,
-    /// Online (Teams or Google Meet) rather than in a room; older files call this `teams`.
-    #[serde(alias = "teams")]
     pub online: bool,
     pub platform: Platform,
     /// Meeting link; Teams meetings without one use the link in Settings.
@@ -458,7 +456,7 @@ impl Default for Meeting {
             time: None,
             held: false,
             online: false,
-            platform: Platform::Teams,
+            platform: Platform::GoogleMeet,
             link: String::new(),
             location: String::new(),
             repeat: None,
@@ -613,6 +611,10 @@ pub fn visit_uid(student_id: Uuid, index: usize) -> String {
     format!("visit{}-{student_id}", index + 1)
 }
 
+// ---------------------------------------------------------------------------
+// TCC
+// ---------------------------------------------------------------------------
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
 pub struct CwStatus {
@@ -622,32 +624,51 @@ pub struct CwStatus {
     pub notes: String,
 }
 
+/// An undergraduate final project (Trabalho de Conclusão de Curso).
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
-pub struct FypRecord {
-    /// `Programme::id`; older files called this `kind`.
-    #[serde(alias = "kind")]
+pub struct TccRecord {
+    /// `Programme::id`.
     pub programme: String,
-    pub project_title: String,
+    pub title: String,
+    /// Co-supervisor (coorientador), if any.
+    pub co_supervisor: String,
     pub initial_contact: bool,
     pub initial_contact_on: Option<NaiveDate>,
     pub meetings: Vec<Meeting>,
     /// Keyed by `CourseworkTemplate::id`.
     pub coursework: HashMap<Uuid, CwStatus>,
+    /// The presentation to the committee (banca).
+    pub defense: Option<NaiveDate>,
+    pub defense_time: Option<NaiveTime>,
+    pub defense_location: String,
+    /// Members of the committee.
+    pub committee: String,
+    pub grade: String,
 }
 
-impl Default for FypRecord {
+impl Default for TccRecord {
     fn default() -> Self {
         Self {
-            programme: "BEng".into(),
-            project_title: String::new(),
+            programme: "graduacao".into(),
+            title: String::new(),
+            co_supervisor: String::new(),
             initial_contact: false,
             initial_contact_on: None,
             meetings: Vec::new(),
             coursework: HashMap::new(),
+            defense: None,
+            defense_time: None,
+            defense_location: String::new(),
+            committee: String::new(),
+            grade: String::new(),
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Estágio supervisionado (internship) and tutoria (personal tutees)
+// ---------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
@@ -666,10 +687,19 @@ pub struct Visit {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct PlacementRecord {
+    /// The company or institution offering the internship (concedente).
     pub company: String,
     pub professional_email: String,
+    /// Supervisor at the company.
     pub line_manager_name: String,
     pub line_manager_email: String,
+    /// Required by the course (estágio obrigatório) or optional.
+    pub mandatory: bool,
+    /// Term of the internship agreement (Termo de Compromisso de Estágio).
+    pub tce_start: Option<NaiveDate>,
+    pub tce_end: Option<NaiveDate>,
+    /// The internship report (relatório de estágio).
+    pub report: Milestone,
     pub visits: [Visit; 2],
 }
 
@@ -680,6 +710,10 @@ impl Default for PlacementRecord {
             professional_email: String::new(),
             line_manager_name: String::new(),
             line_manager_email: String::new(),
+            mandatory: true,
+            tce_start: None,
+            tce_end: None,
+            report: Milestone::default(),
             visits: [
                 Visit::default(),
                 Visit {
@@ -709,284 +743,10 @@ pub struct AdviseeRecord {
 }
 
 // ---------------------------------------------------------------------------
-// PhD / research students
+// Deadlines and reminders
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum ResearchStatus {
-    #[default]
-    Registered,
-    Suspended,
-    WritingUp,
-    Submitted,
-    Awarded,
-    Withdrawn,
-}
-
-impl ResearchStatus {
-    pub const ALL: [ResearchStatus; 6] = [
-        ResearchStatus::Registered,
-        ResearchStatus::Suspended,
-        ResearchStatus::WritingUp,
-        ResearchStatus::Submitted,
-        ResearchStatus::Awarded,
-        ResearchStatus::Withdrawn,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ResearchStatus::Registered => "Registered",
-            ResearchStatus::Suspended => "Suspended",
-            ResearchStatus::WritingUp => "Writing up",
-            ResearchStatus::Submitted => "Submitted",
-            ResearchStatus::Awarded => "Awarded",
-            ResearchStatus::Withdrawn => "Withdrawn",
-        }
-    }
-
-    /// Still working towards the degree, so deadlines and visas matter.
-    pub fn active(self) -> bool {
-        !matches!(self, ResearchStatus::Awarded | ResearchStatus::Withdrawn)
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum StudyMode {
-    #[default]
-    FullTime,
-    PartTime,
-}
-
-impl StudyMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            StudyMode::FullTime => "Full time",
-            StudyMode::PartTime => "Part time",
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum ResearchDegree {
-    #[default]
-    PhD,
-    MPhil,
-    ProfDoc,
-    MRes,
-    MSc,
-}
-
-impl ResearchDegree {
-    pub const ALL: [ResearchDegree; 5] = [
-        ResearchDegree::PhD,
-        ResearchDegree::MSc,
-        ResearchDegree::MPhil,
-        ResearchDegree::ProfDoc,
-        ResearchDegree::MRes,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ResearchDegree::PhD => "PhD",
-            ResearchDegree::MPhil => "MPhil",
-            ResearchDegree::ProfDoc => "Professional doctorate",
-            ResearchDegree::MRes => "MRes",
-            ResearchDegree::MSc => "MSc",
-        }
-    }
-
-    /// For event titles, e.g. "MSc supervision".
-    pub fn short(self) -> &'static str {
-        match self {
-            ResearchDegree::ProfDoc => "Prof Doc",
-            other => other.label(),
-        }
-    }
-
-    /// Master's degrees are listed under MSc, the others under PhD.
-    pub fn masters(self) -> bool {
-        matches!(self, ResearchDegree::MSc | ResearchDegree::MRes)
-    }
-}
-
-/// The research lists in the sidebar.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ResearchGroup {
-    Phd,
-    PhdExternal,
-    Msc,
-    MscExternal,
-}
-
-impl ResearchGroup {
-    pub const ALL: [ResearchGroup; 4] = [
-        ResearchGroup::Phd,
-        ResearchGroup::PhdExternal,
-        ResearchGroup::Msc,
-        ResearchGroup::MscExternal,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ResearchGroup::Phd => "PhD",
-            ResearchGroup::PhdExternal => "PhD External",
-            ResearchGroup::Msc => "MSc",
-            ResearchGroup::MscExternal => "MSc External",
-        }
-    }
-
-    pub fn external(self) -> bool {
-        matches!(self, ResearchGroup::PhdExternal | ResearchGroup::MscExternal)
-    }
-
-    /// A new record for this list. External students start without the
-    /// university's standard assessments.
-    pub fn new_record(self) -> PhdRecord {
-        let degree = match self {
-            ResearchGroup::Phd | ResearchGroup::PhdExternal => ResearchDegree::PhD,
-            ResearchGroup::Msc | ResearchGroup::MscExternal => ResearchDegree::MSc,
-        };
-        PhdRecord {
-            degree,
-            external: self.external(),
-            skip_standard: self.external(),
-            ..Default::default()
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum FeeStatus {
-    #[default]
-    National,
-    Overseas,
-}
-
-impl FeeStatus {
-    pub fn label(self) -> &'static str {
-        match self {
-            FeeStatus::National => "National",
-            FeeStatus::Overseas => "Overseas",
-        }
-    }
-}
-
-/// UK immigration routes a research student may hold.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum VisaType {
-    #[default]
-    NotRequired,
-    Student,
-    Graduate,
-    SkilledWorker,
-    GlobalTalent,
-    Dependant,
-    EuSettlement,
-    Other,
-}
-
-impl VisaType {
-    pub const ALL: [VisaType; 8] = [
-        VisaType::NotRequired,
-        VisaType::Student,
-        VisaType::Graduate,
-        VisaType::SkilledWorker,
-        VisaType::GlobalTalent,
-        VisaType::Dependant,
-        VisaType::EuSettlement,
-        VisaType::Other,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            VisaType::NotRequired => "Not required",
-            VisaType::Student => "Student (Tier 4)",
-            VisaType::Graduate => "Graduate",
-            VisaType::SkilledWorker => "Skilled Worker",
-            VisaType::GlobalTalent => "Global Talent",
-            VisaType::Dependant => "Dependant",
-            VisaType::EuSettlement => "EU Settlement Scheme",
-            VisaType::Other => "Other",
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Funder {
-    #[default]
-    NotSet,
-    DfeQr,
-    Dfe,
-    Vcrs,
-    MarieCurie,
-    Erasmus,
-    SelfFunded,
-    Other,
-}
-
-impl Funder {
-    pub const ALL: [Funder; 8] = [
-        Funder::NotSet,
-        Funder::DfeQr,
-        Funder::Dfe,
-        Funder::Vcrs,
-        Funder::MarieCurie,
-        Funder::Erasmus,
-        Funder::SelfFunded,
-        Funder::Other,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Funder::NotSet => "—",
-            Funder::DfeQr => "DfE QR",
-            Funder::Dfe => "DfE",
-            Funder::Vcrs => "VCRS",
-            Funder::MarieCurie => "Marie Curie",
-            Funder::Erasmus => "Erasmus",
-            Funder::SelfFunded => "Self-funded",
-            Funder::Other => "Other",
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum VivaOutcome {
-    #[default]
-    Pending,
-    Pass,
-    MinorCorrections,
-    MajorCorrections,
-    Resubmit,
-    MPhil,
-    Fail,
-}
-
-impl VivaOutcome {
-    pub const ALL: [VivaOutcome; 7] = [
-        VivaOutcome::Pending,
-        VivaOutcome::Pass,
-        VivaOutcome::MinorCorrections,
-        VivaOutcome::MajorCorrections,
-        VivaOutcome::Resubmit,
-        VivaOutcome::MPhil,
-        VivaOutcome::Fail,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            VivaOutcome::Pending => "Not yet known",
-            VivaOutcome::Pass => "Pass, no corrections",
-            VivaOutcome::MinorCorrections => "Minor corrections",
-            VivaOutcome::MajorCorrections => "Major corrections",
-            VivaOutcome::Resubmit => "Revise and resubmit",
-            VivaOutcome::MPhil => "Award of MPhil",
-            VivaOutcome::Fail => "Fail",
-        }
-    }
-}
-
-/// A deadline from the university system, typed in, and when it was met.
+/// A deadline, typed in or suggested, and when it was met.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
 pub struct Milestone {
@@ -999,6 +759,13 @@ impl Milestone {
     /// The reminder date, `lead` before the deadline.
     pub fn reminder(&self, lead: Lead) -> Option<NaiveDate> {
         lead.before(self.deadline?)
+    }
+
+    fn due(date: Option<NaiveDate>) -> Self {
+        Self {
+            deadline: date,
+            ..Default::default()
+        }
     }
 }
 
@@ -1015,9 +782,9 @@ impl LeadUnit {
 
     pub fn label(self) -> &'static str {
         match self {
-            LeadUnit::Days => "days",
-            LeadUnit::Weeks => "weeks",
-            LeadUnit::Months => "months",
+            LeadUnit::Days => "dias",
+            LeadUnit::Weeks => "semanas",
+            LeadUnit::Months => "meses",
         }
     }
 }
@@ -1047,6 +814,13 @@ impl Lead {
         }
     }
 
+    pub fn weeks(amount: u32) -> Self {
+        Self {
+            amount,
+            unit: LeadUnit::Weeks,
+        }
+    }
+
     pub fn before(self, date: NaiveDate) -> Option<NaiveDate> {
         match (self.amount, self.unit) {
             (0, _) => None,
@@ -1057,7 +831,7 @@ impl Lead {
     }
 }
 
-/// A deadline added by hand (e.g. from another university), with its own reminder.
+/// A deadline added by hand (e.g. from the programme's own rules), with its own reminder.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct CustomStep {
@@ -1078,123 +852,708 @@ impl Default for CustomStep {
     }
 }
 
-/// One dated step of a research degree, for events, reminders and editing
-/// (change a copy, then write it back with `PhdRecord::milestone_mut`).
-pub struct PhdStep {
+/// One dated step of a research project, for events, reminders and editing
+/// (change a copy, then write it back with `milestone_mut`).
+pub struct Step {
     /// Stable part of the event UID.
     pub key: String,
-    /// E.g. "Initial assessment".
+    /// E.g. "Exame de qualificação".
     pub label: String,
     pub milestone: Milestone,
     /// How long before the deadline the reminder falls.
     pub lead: Lead,
 }
 
+fn step(key: &str, label: &str, milestone: &Milestone, lead: Lead) -> Step {
+    Step {
+        key: key.into(),
+        label: label.into(),
+        milestone: milestone.clone(),
+        lead,
+    }
+}
+
+fn custom_steps(steps: &[CustomStep]) -> impl Iterator<Item = Step> + '_ {
+    steps.iter().map(|c| Step {
+        key: format!("custom-{}", c.id),
+        label: match c.title.trim() {
+            "" => "Prazo".into(),
+            title => title.into(),
+        },
+        milestone: c.milestone.clone(),
+        lead: c.remind,
+    })
+}
+
+fn custom_milestone<'a>(steps: &'a mut [CustomStep], key: &str) -> Option<&'a mut Milestone> {
+    steps
+        .iter_mut()
+        .find(|c| format!("custom-{}", c.id) == key)
+        .map(|c| &mut c.milestone)
+}
+
+fn add_months(date: NaiveDate, months: u32) -> Option<NaiveDate> {
+    date.checked_add_months(Months::new(months))
+}
+
+// ---------------------------------------------------------------------------
+// Funding agencies and grants (bolsas)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AgencyKind {
+    Federal,
+    /// A state research foundation (FAP).
+    State,
+    Other,
+}
+
+/// A body that funds scholarships, listed in the grant editor.
+pub struct Agency {
+    /// Stored on grants.
+    pub id: &'static str,
+    pub name: &'static str,
+    pub kind: AgencyKind,
+    /// State (UF) of a FAP.
+    pub uf: &'static str,
+}
+
+const fn agency(id: &'static str, name: &'static str, kind: AgencyKind, uf: &'static str) -> Agency {
+    Agency { id, name, kind, uf }
+}
+
+/// Federal agencies, the 27 state foundations (FAPs, one per state, as
+/// listed by CONFAP) and other sources. All of them fund both iniciação
+/// científica and postgraduate scholarships.
+pub const AGENCIES: &[Agency] = &[
+    agency("CNPq", "Conselho Nacional de Desenvolvimento Científico e Tecnológico", AgencyKind::Federal, ""),
+    agency("CAPES", "Coordenação de Aperfeiçoamento de Pessoal de Nível Superior", AgencyKind::Federal, ""),
+    agency("FINEP", "Financiadora de Estudos e Projetos", AgencyKind::Federal, ""),
+    agency("ANP", "Agência Nacional do Petróleo – PRH-ANP", AgencyKind::Federal, ""),
+    agency("MEC", "Ministério da Educação (PET, residências)", AgencyKind::Federal, ""),
+    agency("MS", "Ministério da Saúde (residências)", AgencyKind::Federal, ""),
+    agency("FAPAC", "Fundação de Amparo à Pesquisa do Acre", AgencyKind::State, "AC"),
+    agency("FAPEAL", "Fundação de Amparo à Pesquisa do Estado de Alagoas", AgencyKind::State, "AL"),
+    agency("FAPEAP", "Fundação de Amparo à Pesquisa do Amapá", AgencyKind::State, "AP"),
+    agency("FAPEAM", "Fundação de Amparo à Pesquisa do Estado do Amazonas", AgencyKind::State, "AM"),
+    agency("FAPESB", "Fundação de Amparo à Pesquisa do Estado da Bahia", AgencyKind::State, "BA"),
+    agency("FUNCAP", "Fundação Cearense de Apoio ao Desenvolvimento Científico e Tecnológico", AgencyKind::State, "CE"),
+    agency("FAPDF", "Fundação de Apoio à Pesquisa do Distrito Federal", AgencyKind::State, "DF"),
+    agency("FAPES", "Fundação de Amparo à Pesquisa e Inovação do Espírito Santo", AgencyKind::State, "ES"),
+    agency("FAPEG", "Fundação de Amparo à Pesquisa do Estado de Goiás", AgencyKind::State, "GO"),
+    agency("FAPEMA", "Fundação de Amparo à Pesquisa e ao Desenvolvimento Científico do Maranhão", AgencyKind::State, "MA"),
+    agency("FAPEMAT", "Fundação de Amparo à Pesquisa do Estado de Mato Grosso", AgencyKind::State, "MT"),
+    agency("FUNDECT", "Fundação de Apoio ao Desenvolvimento do Ensino, Ciência e Tecnologia de MS", AgencyKind::State, "MS"),
+    agency("FAPEMIG", "Fundação de Amparo à Pesquisa do Estado de Minas Gerais", AgencyKind::State, "MG"),
+    agency("FAPESPA", "Fundação Amazônia de Amparo a Estudos e Pesquisas do Pará", AgencyKind::State, "PA"),
+    agency("FAPESQ", "Fundação de Apoio à Pesquisa do Estado da Paraíba", AgencyKind::State, "PB"),
+    agency("Araucária", "Fundação Araucária (Paraná)", AgencyKind::State, "PR"),
+    agency("FACEPE", "Fundação de Amparo à Ciência e Tecnologia do Estado de Pernambuco", AgencyKind::State, "PE"),
+    agency("FAPEPI", "Fundação de Amparo à Pesquisa do Estado do Piauí", AgencyKind::State, "PI"),
+    agency("FAPERJ", "Fundação Carlos Chagas Filho de Amparo à Pesquisa do Estado do Rio de Janeiro", AgencyKind::State, "RJ"),
+    agency("FAPERN", "Fundação de Apoio à Pesquisa do Estado do Rio Grande do Norte", AgencyKind::State, "RN"),
+    agency("FAPERGS", "Fundação de Amparo à Pesquisa do Estado do Rio Grande do Sul", AgencyKind::State, "RS"),
+    agency("FAPERO", "Fundação de Amparo à Pesquisa de Rondônia", AgencyKind::State, "RO"),
+    agency("FAPERR", "Fundação de Amparo à Pesquisa do Estado de Roraima", AgencyKind::State, "RR"),
+    agency("FAPESC", "Fundação de Amparo à Pesquisa e Inovação do Estado de Santa Catarina", AgencyKind::State, "SC"),
+    agency("FAPESP", "Fundação de Amparo à Pesquisa do Estado de São Paulo", AgencyKind::State, "SP"),
+    agency("FAPITEC", "Fundação de Apoio à Pesquisa e à Inovação Tecnológica de Sergipe", AgencyKind::State, "SE"),
+    agency("FAPT", "Fundação de Amparo à Pesquisa do Tocantins", AgencyKind::State, "TO"),
+    agency("Institucional", "Bolsa da própria instituição (IES)", AgencyKind::Other, ""),
+    agency("Empresa", "Empresa ou convênio", AgencyKind::Other, ""),
+    agency("Outra", "Outra fonte", AgencyKind::Other, ""),
+];
+
+pub fn agency_by_id(id: &str) -> Option<&'static Agency> {
+    AGENCIES.iter().find(|a| a.id == id)
+}
+
+/// Usual length of a grant in months: 12 for iniciação científica (renewable),
+/// 24 for a master's and 48 for a doctorate (CAPES Portaria 76/2010 art. 10,
+/// CNPq RN-017/2006, and most FAPs). Always editable.
+pub fn typical_grant_months(level: Option<Level>) -> u32 {
+    match level {
+        None => 12,
+        Some(Level::MestradoAcademico | Level::MestradoProfissional) => 24,
+        Some(Level::DoutoradoAcademico | Level::DoutoradoProfissional) => 48,
+        Some(Level::Residencia) => 24,
+        Some(Level::Especializacao | Level::PosDoutorado) => 12,
+    }
+}
+
+/// Why a grant or a course deadline was extended.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ExtensionReason {
+    #[default]
+    None,
+    /// Birth, adoption or guardianship (Lei 13.536/2017, alterada pela Lei 14.925/2024).
+    Parental,
+    Health,
+    /// Decided by the programme's board (colegiado).
+    Board,
+    Other,
+}
+
+impl ExtensionReason {
+    pub const ALL: [ExtensionReason; 5] = [
+        ExtensionReason::None,
+        ExtensionReason::Parental,
+        ExtensionReason::Health,
+        ExtensionReason::Board,
+        ExtensionReason::Other,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ExtensionReason::None => "—",
+            ExtensionReason::Parental => "Licença parental (Lei 14.925/2024)",
+            ExtensionReason::Health => "Saúde",
+            ExtensionReason::Board => "Decisão do colegiado",
+            ExtensionReason::Other => "Outro motivo",
+        }
+    }
+
+    /// A hint on how long the extension may be.
+    pub fn hint(self) -> &'static str {
+        match self {
+            ExtensionReason::Parental => {
+                "A Lei 14.925/2024 permite prorrogar bolsas por até 180 dias (6 meses) em caso de parto, adoção ou guarda."
+            }
+            ExtensionReason::Health => {
+                "Na CAPES (Portaria 76/2010), a suspensão por doença grave, parto ou aleitamento é de até 6 meses e não conta no prazo da bolsa."
+            }
+            _ => "",
+        }
+    }
+}
+
+/// A scholarship: who pays, which programme, and for how long.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
-pub struct PhdRecord {
-    pub title: String,
-    pub chair: String,
-    /// The rest of the supervisory team.
-    pub supervisors: String,
-    pub status: ResearchStatus,
-    pub mode: StudyMode,
-    pub degree: ResearchDegree,
-    /// Registered at another university (co-supervised from here).
-    pub external: bool,
-    /// Their university, for external students.
-    pub university: String,
-    pub fee_status: FeeStatus,
-    pub visa: VisaType,
-    /// Name of the visa when `visa` is `Other`.
-    pub visa_other: String,
-    pub visa_start: Option<NaiveDate>,
-    pub visa_end: Option<NaiveDate>,
-    pub cas_number: String,
-    pub funding_source: String,
-    pub funder: Funder,
-    /// Name of the funder when `funder` is `Other`.
-    pub funder_other: String,
+pub struct Grant {
+    /// `Agency::id`; empty when there is no grant.
+    pub agency: String,
+    /// Name of the source when `agency` is "Outra".
+    pub agency_other: String,
+    /// E.g. "Demanda Social", "PROEX", "GM", "PIBIC".
+    pub modality: String,
+    /// Process number at the agency.
+    pub process: String,
     pub start: Option<NaiveDate>,
-    pub end: Option<NaiveDate>,
-    pub initial: Milestone,
-    pub confirmation: Milestone,
-    pub final_assessment: Milestone,
-    pub annual_reports: Vec<Milestone>,
-    pub examiners: Milestone,
-    pub intention: Milestone,
-    /// The earliest date the thesis may be submitted.
-    pub earliest_submission: Option<NaiveDate>,
-    pub submission: Milestone,
-    pub viva: Option<NaiveDate>,
-    pub viva_time: Option<NaiveTime>,
-    pub viva_location: String,
-    pub outcome: VivaOutcome,
-    pub amendments: Milestone,
-    pub awarded_on: Option<NaiveDate>,
-    /// Leave out this university's standard assessments (initial,
-    /// confirmation, annual reports, …), e.g. for external students.
-    pub skip_standard: bool,
-    /// Deadlines added by hand.
+    /// Planned length in months; 0 = not set.
+    pub months: u32,
+    /// Months added by an extension (prorrogação).
+    pub extension_months: u32,
+    pub extension_reason: ExtensionReason,
+}
+
+impl Grant {
+    pub fn active(&self) -> bool {
+        !self.agency.is_empty()
+    }
+
+    /// Last day of the grant: start + months + extension, minus a day.
+    pub fn end(&self) -> Option<NaiveDate> {
+        if !self.active() || self.months == 0 {
+            return None;
+        }
+        add_months(self.start?, self.months + self.extension_months)?.pred_opt()
+    }
+
+    /// "CAPES", or the name typed in for another source.
+    pub fn agency_label(&self) -> String {
+        match self.agency.as_str() {
+            "Outra" if !self.agency_other.trim().is_empty() => self.agency_other.trim().into(),
+            "" => "Sem bolsa".into(),
+            id => id.into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iniciação científica
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum IcModality {
+    #[default]
+    Pibic,
+    Pibiti,
+    /// Ações afirmativas.
+    PibicAf,
+    /// Ensino médio.
+    PibicEm,
+    /// Without a grant (PIVIC and similar).
+    Voluntary,
+    Institutional,
+    Other,
+}
+
+impl IcModality {
+    pub const ALL: [IcModality; 7] = [
+        IcModality::Pibic,
+        IcModality::Pibiti,
+        IcModality::PibicAf,
+        IcModality::PibicEm,
+        IcModality::Voluntary,
+        IcModality::Institutional,
+        IcModality::Other,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            IcModality::Pibic => "PIBIC",
+            IcModality::Pibiti => "PIBITI",
+            IcModality::PibicAf => "PIBIC-Af (ações afirmativas)",
+            IcModality::PibicEm => "PIBIC-EM (ensino médio)",
+            IcModality::Voluntary => "Voluntária (PIVIC)",
+            IcModality::Institutional => "Programa institucional",
+            IcModality::Other => "Outra",
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            IcModality::PibicAf => "PIBIC-Af",
+            IcModality::PibicEm => "PIBIC-EM",
+            IcModality::Voluntary => "Voluntária",
+            IcModality::Institutional => "Institucional",
+            other => other.label(),
+        }
+    }
+}
+
+/// An undergraduate research student (iniciação científica). The usual
+/// cycle is a 12-month grant with a partial report around month 6, a final
+/// report at the end and a talk or poster at the institution's annual
+/// seminar (CNPq RN-017/2006).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct IcRecord {
+    /// Title of the work plan (plano de trabalho).
+    pub title: String,
+    /// The supervisor's research project it belongs to.
+    pub project: String,
+    pub modality: IcModality,
+    pub grant: Grant,
+    pub partial_report: Milestone,
+    pub final_report: Milestone,
+    pub seminar: Milestone,
     pub custom_steps: Vec<CustomStep>,
     pub meetings: Vec<Meeting>,
 }
 
-impl PhdRecord {
-    /// Every step with a deadline, in the order of the degree, then those
-    /// added by hand. Reminder lead times of the standard steps follow the
-    /// university system (e.g. 3 months for the initial assessment).
-    pub fn steps(&self) -> Vec<PhdStep> {
-        let step = |key: &str, label: &str, milestone: &Milestone, lead_months| PhdStep {
-            key: key.into(),
-            label: label.into(),
-            milestone: milestone.clone(),
-            lead: Lead::months(lead_months),
-        };
-        let mut steps = Vec::new();
-        if !self.skip_standard {
-            steps.extend([
-                step("initial", "Initial assessment", &self.initial, 3),
-                step("confirmation", "Confirmation assessment", &self.confirmation, 4),
-                step("final", "Final assessment", &self.final_assessment, 7),
-            ]);
-            for (i, report) in self.annual_reports.iter().enumerate() {
-                let label = match report.deadline {
-                    Some(d) => format!("Annual report {}", d.year()),
-                    None => format!("Annual report {}", i + 1),
-                };
-                steps.push(step(&format!("annual{}", i + 1), &label, report, 1));
-            }
-            steps.extend([
-                step("examiners", "Appoint examiners", &self.examiners, 1),
-                step("intention", "Intention to submit", &self.intention, 1),
-                step("submission", "Thesis submission", &self.submission, 1),
-            ]);
-        }
-        steps.push(step("amendments", "Amendments", &self.amendments, 1));
-        steps.extend(self.custom_steps.iter().map(|c| PhdStep {
-            key: format!("custom-{}", c.id),
-            label: match c.title.trim() {
-                "" => "Deadline".into(),
-                title => title.into(),
+impl IcRecord {
+    pub fn new() -> Self {
+        Self {
+            grant: Grant {
+                agency: "CNPq".into(),
+                modality: "PIBIC".into(),
+                months: 12,
+                ..Default::default()
             },
-            milestone: c.milestone.clone(),
-            lead: c.remind,
-        }));
+            ..Default::default()
+        }
+    }
+
+    pub fn steps(&self) -> Vec<Step> {
+        let mut steps = vec![
+            step("partial", "Relatório parcial", &self.partial_report, Lead::weeks(3)),
+            step("final", "Relatório final", &self.final_report, Lead::months(1)),
+            step("seminar", "Apresentação no seminário de IC", &self.seminar, Lead::months(1)),
+        ];
+        steps.extend(custom_steps(&self.custom_steps));
         steps
     }
 
-    /// Which research list the student is shown in.
-    pub fn group(&self) -> ResearchGroup {
-        match (self.degree.masters(), self.external) {
-            (false, false) => ResearchGroup::Phd,
-            (false, true) => ResearchGroup::PhdExternal,
-            (true, false) => ResearchGroup::Msc,
-            (true, true) => ResearchGroup::MscExternal,
+    pub fn milestone_mut(&mut self, key: &str) -> Option<&mut Milestone> {
+        match key {
+            "partial" => Some(&mut self.partial_report),
+            "final" => Some(&mut self.final_report),
+            "seminar" => Some(&mut self.seminar),
+            _ => custom_milestone(&mut self.custom_steps, key),
         }
     }
 
-    /// Year of study (1-based) on `date`, counted from the start.
+    /// Fills the empty report deadlines from the grant: the partial report
+    /// half-way, the final report on its last day.
+    pub fn suggest(&mut self) {
+        let Some(start) = self.grant.start else { return };
+        let months = match self.grant.months {
+            0 => 12,
+            n => n,
+        } + self.grant.extension_months;
+        if self.partial_report.deadline.is_none() {
+            self.partial_report.deadline = add_months(start, months / 2);
+        }
+        if self.final_report.deadline.is_none() {
+            self.final_report.deadline = add_months(start, months).and_then(|d| d.pred_opt());
+        }
+    }
+
+    pub fn next_step(&self) -> Option<Step> {
+        next_step(self.steps())
+    }
+}
+
+fn next_step(steps: Vec<Step>) -> Option<Step> {
+    steps
+        .into_iter()
+        .filter(|s| !s.milestone.done && s.milestone.deadline.is_some())
+        .min_by_key(|s| s.milestone.deadline)
+}
+
+// ---------------------------------------------------------------------------
+// Pós-graduação
+// ---------------------------------------------------------------------------
+
+/// Postgraduate levels: lato sensu (specialisation, residency) and stricto
+/// sensu (academic and professional master's and doctorates), plus
+/// postdoctoral researchers you supervise.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+pub enum Level {
+    Especializacao,
+    Residencia,
+    #[default]
+    MestradoAcademico,
+    MestradoProfissional,
+    DoutoradoAcademico,
+    DoutoradoProfissional,
+    PosDoutorado,
+}
+
+impl Level {
+    pub const ALL: [Level; 7] = [
+        Level::Especializacao,
+        Level::Residencia,
+        Level::MestradoAcademico,
+        Level::MestradoProfissional,
+        Level::DoutoradoAcademico,
+        Level::DoutoradoProfissional,
+        Level::PosDoutorado,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Level::Especializacao => "Especialização / MBA",
+            Level::Residencia => "Residência",
+            Level::MestradoAcademico => "Mestrado acadêmico",
+            Level::MestradoProfissional => "Mestrado profissional",
+            Level::DoutoradoAcademico => "Doutorado acadêmico",
+            Level::DoutoradoProfissional => "Doutorado profissional",
+            Level::PosDoutorado => "Pós-doutorado",
+        }
+    }
+
+    /// For chips and event titles.
+    pub fn short(self) -> &'static str {
+        match self {
+            Level::Especializacao => "Especialização",
+            Level::Residencia => "Residência",
+            Level::MestradoAcademico => "Mestrado",
+            Level::MestradoProfissional => "Mestrado prof.",
+            Level::DoutoradoAcademico => "Doutorado",
+            Level::DoutoradoProfissional => "Doutorado prof.",
+            Level::PosDoutorado => "Pós-doc",
+        }
+    }
+
+    pub fn lato_sensu(self) -> bool {
+        matches!(self, Level::Especializacao | Level::Residencia)
+    }
+
+    /// "Lato sensu" or "Stricto sensu" (postdocs are neither).
+    pub fn kind(self) -> &'static str {
+        match self {
+            Level::Especializacao | Level::Residencia => "Lato sensu",
+            Level::PosDoutorado => "Pós-doutorado",
+            _ => "Stricto sensu",
+        }
+    }
+
+    pub fn group(self) -> PosGroup {
+        match self {
+            Level::Especializacao | Level::Residencia => PosGroup::LatoSensu,
+            Level::MestradoAcademico => PosGroup::Mestrado,
+            Level::MestradoProfissional => PosGroup::MestradoProfissional,
+            Level::DoutoradoAcademico | Level::DoutoradoProfissional => PosGroup::Doutorado,
+            Level::PosDoutorado => PosGroup::PosDoutorado,
+        }
+    }
+
+    /// The work that ends the course.
+    pub fn work(self) -> &'static str {
+        match self {
+            Level::Especializacao | Level::Residencia => "trabalho de conclusão",
+            Level::MestradoAcademico => "dissertação",
+            Level::MestradoProfissional => "trabalho de conclusão",
+            Level::DoutoradoAcademico | Level::DoutoradoProfissional => "tese",
+            Level::PosDoutorado => "relatório final",
+        }
+    }
+
+    /// Label of the final deadline.
+    pub fn final_label(self) -> String {
+        match self {
+            Level::PosDoutorado => "Relatório final".into(),
+            Level::Especializacao | Level::Residencia => "Entrega do trabalho de conclusão".into(),
+            _ => format!("Prazo para a defesa da {}", self.work()),
+        }
+    }
+}
+
+/// The postgraduate lists in the sidebar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum PosGroup {
+    LatoSensu,
+    Mestrado,
+    MestradoProfissional,
+    Doutorado,
+    PosDoutorado,
+}
+
+impl PosGroup {
+    pub const ALL: [PosGroup; 5] = [
+        PosGroup::LatoSensu,
+        PosGroup::Mestrado,
+        PosGroup::MestradoProfissional,
+        PosGroup::Doutorado,
+        PosGroup::PosDoutorado,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PosGroup::LatoSensu => "Lato sensu",
+            PosGroup::Mestrado => "Mestrado",
+            PosGroup::MestradoProfissional => "Mestrado profissional",
+            PosGroup::Doutorado => "Doutorado",
+            PosGroup::PosDoutorado => "Pós-doutorado",
+        }
+    }
+
+    /// The level a new student of this list starts with.
+    pub fn level(self) -> Level {
+        match self {
+            PosGroup::LatoSensu => Level::Especializacao,
+            PosGroup::Mestrado => Level::MestradoAcademico,
+            PosGroup::MestradoProfissional => Level::MestradoProfissional,
+            PosGroup::Doutorado => Level::DoutoradoAcademico,
+            PosGroup::PosDoutorado => Level::PosDoutorado,
+        }
+    }
+
+    /// Shown in the sidebar and dashboard even when empty.
+    pub fn always_shown(self) -> bool {
+        matches!(self, PosGroup::Mestrado | PosGroup::Doutorado)
+    }
+}
+
+/// Deadlines of a level, in months from enrolment; 0 = doesn't apply.
+/// Each programme's regulations (regimento) set its own, so the defaults
+/// are only a common starting point and can be changed in Settings.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct LevelRule {
+    pub level: Level,
+    /// Complete the course credits (integralização dos créditos).
+    pub credits_months: u32,
+    /// Foreign-language proficiency exam.
+    pub proficiency_months: u32,
+    /// Qualifying exam (exame de qualificação).
+    pub qualification_months: u32,
+    /// The defence, or the final work for lato sensu and postdocs.
+    pub final_months: u32,
+}
+
+impl Default for LevelRule {
+    fn default() -> Self {
+        Self::default_for(Level::MestradoAcademico)
+    }
+}
+
+impl LevelRule {
+    pub fn default_for(level: Level) -> Self {
+        let (credits, proficiency, qualification, final_months) = match level {
+            Level::Especializacao => (12, 0, 0, 18),
+            Level::Residencia => (0, 0, 0, 24),
+            Level::MestradoAcademico => (12, 12, 12, 24),
+            Level::MestradoProfissional => (12, 12, 15, 24),
+            Level::DoutoradoAcademico => (24, 24, 24, 48),
+            Level::DoutoradoProfissional => (24, 24, 30, 48),
+            Level::PosDoutorado => (0, 0, 0, 12),
+        };
+        Self {
+            level,
+            credits_months: credits,
+            proficiency_months: proficiency,
+            qualification_months: qualification,
+            final_months,
+        }
+    }
+}
+
+pub fn default_level_rules() -> Vec<LevelRule> {
+    Level::ALL.into_iter().map(LevelRule::default_for).collect()
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PosStatus {
+    #[default]
+    Active,
+    /// Enrolment suspended (trancamento) or on leave.
+    Suspended,
+    Writing,
+    AwaitingDefense,
+    Graduated,
+    Withdrawn,
+}
+
+impl PosStatus {
+    pub const ALL: [PosStatus; 6] = [
+        PosStatus::Active,
+        PosStatus::Suspended,
+        PosStatus::Writing,
+        PosStatus::AwaitingDefense,
+        PosStatus::Graduated,
+        PosStatus::Withdrawn,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PosStatus::Active => "Cursando",
+            PosStatus::Suspended => "Trancado / afastado",
+            PosStatus::Writing => "Em redação",
+            PosStatus::AwaitingDefense => "Aguardando defesa",
+            PosStatus::Graduated => "Titulado(a)",
+            PosStatus::Withdrawn => "Desligado(a)",
+        }
+    }
+
+    /// Still working towards the degree, so deadlines and grants matter.
+    pub fn active(self) -> bool {
+        !matches!(self, PosStatus::Graduated | PosStatus::Withdrawn)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum DefenseOutcome {
+    #[default]
+    Pending,
+    Approved,
+    ApprovedWithChanges,
+    Resubmit,
+    Failed,
+}
+
+impl DefenseOutcome {
+    pub const ALL: [DefenseOutcome; 5] = [
+        DefenseOutcome::Pending,
+        DefenseOutcome::Approved,
+        DefenseOutcome::ApprovedWithChanges,
+        DefenseOutcome::Resubmit,
+        DefenseOutcome::Failed,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DefenseOutcome::Pending => "Ainda não definido",
+            DefenseOutcome::Approved => "Aprovado(a)",
+            DefenseOutcome::ApprovedWithChanges => "Aprovado(a) com correções",
+            DefenseOutcome::Resubmit => "Reformulação (nova defesa)",
+            DefenseOutcome::Failed => "Reprovado(a)",
+        }
+    }
+}
+
+/// A postgraduate student, or a postdoc you supervise.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct PosRecord {
+    pub title: String,
+    /// Postgraduate programme (PPG).
+    pub program: String,
+    pub co_supervisors: String,
+    pub status: PosStatus,
+    pub level: Level,
+    /// Enrolled in another programme or institution; you co-supervise.
+    pub external: bool,
+    /// Their institution, for external students.
+    pub institution: String,
+    /// Enrolment (ingresso).
+    pub start: Option<NaiveDate>,
+    /// Months added to the course deadlines by an extension.
+    pub extension_months: u32,
+    pub extension_reason: ExtensionReason,
+    pub grant: Grant,
+    pub credits: Milestone,
+    pub proficiency: Milestone,
+    pub qualification: Milestone,
+    /// Reports to the programme or the funding agency.
+    pub annual_reports: Vec<Milestone>,
+    /// Sending the work to the committee (depósito / envio à banca).
+    pub submission: Milestone,
+    /// The deadline for the defence (or the final work).
+    pub final_deadline: Milestone,
+    pub defense: Option<NaiveDate>,
+    pub defense_time: Option<NaiveTime>,
+    pub defense_location: String,
+    pub committee: String,
+    pub outcome: DefenseOutcome,
+    /// Handing in the corrected final version after the defence.
+    pub final_version: Milestone,
+    pub awarded_on: Option<NaiveDate>,
+    /// Leave out the standard steps (credits, qualifying exam, …), e.g. for
+    /// external students whose programme has other rules.
+    pub skip_standard: bool,
+    pub custom_steps: Vec<CustomStep>,
+    pub meetings: Vec<Meeting>,
+}
+
+impl PosRecord {
+    pub fn new(level: Level) -> Self {
+        Self {
+            level,
+            ..Default::default()
+        }
+    }
+
+    /// Every step with a deadline, in the order of the course, then those
+    /// added by hand.
+    pub fn steps(&self) -> Vec<Step> {
+        let mut steps = Vec::new();
+        if !self.skip_standard {
+            let stricto = !self.level.lato_sensu() && self.level != Level::PosDoutorado;
+            if self.level != Level::PosDoutorado && self.level != Level::Residencia {
+                steps.push(step("credits", "Integralização dos créditos", &self.credits, Lead::months(2)));
+            }
+            if stricto {
+                steps.push(step("proficiency", "Proficiência em língua estrangeira", &self.proficiency, Lead::months(2)));
+                steps.push(step("qualification", "Exame de qualificação", &self.qualification, Lead::months(3)));
+            }
+            for (i, report) in self.annual_reports.iter().enumerate() {
+                let label = match report.deadline {
+                    Some(d) => format!("Relatório anual {}", d.year()),
+                    None => format!("Relatório anual {}", i + 1),
+                };
+                steps.push(step(&format!("annual{}", i + 1), &label, report, Lead::months(1)));
+            }
+            if self.level != Level::PosDoutorado {
+                let send = format!("Envio da {} à banca", self.level.work());
+                steps.push(step("submission", &send, &self.submission, Lead::months(1)));
+            }
+            steps.push(step("final", &self.level.final_label(), &self.final_deadline, Lead::months(4)));
+        }
+        steps.push(step("final-version", "Entrega da versão final", &self.final_version, Lead::weeks(2)));
+        steps.extend(custom_steps(&self.custom_steps));
+        steps
+    }
+
+    /// Which postgraduate list the student is shown in.
+    pub fn group(&self) -> PosGroup {
+        self.level.group()
+    }
+
+    /// Year of the course (1-based) on `date`, counted from enrolment.
     pub fn year_of_study(&self, date: NaiveDate) -> Option<u32> {
         let start = self.start?;
         let mut year = 1;
@@ -1204,21 +1563,16 @@ impl PhdRecord {
         (date >= start).then_some(year)
     }
 
-    /// The milestone a `PhdStep::key` refers to.
+    /// The milestone a `Step::key` refers to.
     pub fn milestone_mut(&mut self, key: &str) -> Option<&mut Milestone> {
         match key {
-            "initial" => Some(&mut self.initial),
-            "confirmation" => Some(&mut self.confirmation),
-            "final" => Some(&mut self.final_assessment),
-            "examiners" => Some(&mut self.examiners),
-            "intention" => Some(&mut self.intention),
+            "credits" => Some(&mut self.credits),
+            "proficiency" => Some(&mut self.proficiency),
+            "qualification" => Some(&mut self.qualification),
             "submission" => Some(&mut self.submission),
-            "amendments" => Some(&mut self.amendments),
-            _ if key.starts_with("custom-") => self
-                .custom_steps
-                .iter_mut()
-                .find(|c| format!("custom-{}", c.id) == key)
-                .map(|c| &mut c.milestone),
+            "final" => Some(&mut self.final_deadline),
+            "final-version" => Some(&mut self.final_version),
+            _ if key.starts_with("custom-") => custom_milestone(&mut self.custom_steps, key),
             _ => {
                 let n: usize = key.strip_prefix("annual")?.parse().ok()?;
                 self.annual_reports.get_mut(n.checked_sub(1)?)
@@ -1226,77 +1580,129 @@ impl PhdRecord {
         }
     }
 
+    /// The final deadline the rules give: enrolment + months of the level
+    /// + any extension.
+    pub fn rule_deadline(&self, rule: &LevelRule) -> Option<NaiveDate> {
+        (rule.final_months > 0)
+            .then(|| add_months(self.start?, rule.final_months + self.extension_months))
+            .flatten()
+    }
+
+    /// Fills the empty deadlines from the enrolment date and the rules of
+    /// the level; dates already set are kept. Annual reports are added for
+    /// each full year before the final deadline.
+    pub fn suggest(&mut self, rule: &LevelRule) {
+        let Some(start) = self.start else { return };
+        let at = |months: u32| (months > 0).then(|| add_months(start, months)).flatten();
+        for (m, months) in [
+            (&mut self.credits, rule.credits_months),
+            (&mut self.proficiency, rule.proficiency_months),
+            (&mut self.qualification, rule.qualification_months),
+        ] {
+            if m.deadline.is_none() {
+                m.deadline = at(months);
+            }
+        }
+        if self.final_deadline.deadline.is_none() {
+            self.final_deadline.deadline = self.rule_deadline(rule);
+        }
+        if self.submission.deadline.is_none() && self.level != Level::PosDoutorado {
+            self.submission.deadline = self.final_deadline.deadline.and_then(|d| d.checked_sub_months(Months::new(1)));
+        }
+        if self.annual_reports.is_empty()
+            && let Some(end) = self.final_deadline.deadline
+        {
+            let mut year = 1;
+            while let Some(date) = add_months(start, 12 * year).filter(|d| *d < end) {
+                self.annual_reports.push(Milestone::due(Some(date)));
+                year += 1;
+            }
+        }
+        if self.grant.active() && self.grant.start.is_none() {
+            self.grant.start = Some(start);
+        }
+        if self.grant.active() && self.grant.months == 0 {
+            self.grant.months = typical_grant_months(Some(self.level));
+        }
+    }
+
     /// The earliest deadline not yet met.
-    pub fn next_step(&self) -> Option<PhdStep> {
-        self.steps()
-            .into_iter()
-            .filter(|s| !s.milestone.done && s.milestone.deadline.is_some())
-            .min_by_key(|s| s.milestone.deadline)
+    pub fn next_step(&self) -> Option<Step> {
+        next_step(self.steps())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Students
+// ---------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Student {
     pub id: Uuid,
-    pub b_number: String,
+    /// Enrolment number (matrícula); some institutions use the CPF.
+    pub enrollment: String,
     pub name: String,
     pub email: String,
     pub course: String,
     pub archived: bool,
     pub notes: String,
-    pub fyp: Option<FypRecord>,
+    pub tcc: Option<TccRecord>,
+    pub ic: Option<IcRecord>,
     pub placement: Option<PlacementRecord>,
     pub advisee: Option<AdviseeRecord>,
-    pub phd: Option<PhdRecord>,
+    pub pos: Option<PosRecord>,
 }
 
 impl Default for Student {
     fn default() -> Self {
         Self {
             id: Uuid::new_v4(),
-            b_number: String::new(),
+            enrollment: String::new(),
             name: String::new(),
             email: String::new(),
             course: String::new(),
             archived: false,
             notes: String::new(),
-            fyp: None,
+            tcc: None,
+            ic: None,
             placement: None,
             advisee: None,
-            phd: None,
+            pos: None,
         }
     }
 }
 
 impl Student {
-    /// Every meeting across the project, advisee and PhD roles.
+    /// Every meeting across the TCC, IC, tutoria and postgraduate roles.
     pub fn meetings(&self) -> impl Iterator<Item = &Meeting> {
-        let fyp = self.fyp.iter().flat_map(|f| &f.meetings);
+        let tcc = self.tcc.iter().flat_map(|f| &f.meetings);
+        let ic = self.ic.iter().flat_map(|f| &f.meetings);
         let advisee = self
             .advisee
             .iter()
             .flat_map(|a| a.s1.meetings.iter().chain(&a.s2.meetings));
-        let phd = self.phd.iter().flat_map(|p| &p.meetings);
-        fyp.chain(advisee).chain(phd)
+        let pos = self.pos.iter().flat_map(|p| &p.meetings);
+        tcc.chain(ic).chain(advisee).chain(pos)
     }
 
     pub fn meetings_mut(&mut self) -> impl Iterator<Item = &mut Meeting> {
-        let fyp = self.fyp.iter_mut().flat_map(|f| &mut f.meetings);
+        let tcc = self.tcc.iter_mut().flat_map(|f| &mut f.meetings);
+        let ic = self.ic.iter_mut().flat_map(|f| &mut f.meetings);
         let advisee = self
             .advisee
             .iter_mut()
             .flat_map(|a| a.s1.meetings.iter_mut().chain(&mut a.s2.meetings));
-        let phd = self.phd.iter_mut().flat_map(|p| &mut p.meetings);
-        fyp.chain(advisee).chain(phd)
+        let pos = self.pos.iter_mut().flat_map(|p| &mut p.meetings);
+        tcc.chain(ic).chain(advisee).chain(pos)
     }
 
+    /// The name, for titles, messages and calendar files. The enrolment
+    /// number is left out, as it may be a CPF.
     pub fn display_name(&self) -> String {
-        match (self.name.is_empty(), self.b_number.is_empty()) {
-            (false, false) => format!("{} ({})", self.name, self.b_number),
-            (false, true) => self.name.clone(),
-            (true, false) => self.b_number.clone(),
-            (true, true) => "(unnamed student)".into(),
+        match self.name.trim() {
+            "" => "(aluno sem nome)".into(),
+            name => name.into(),
         }
     }
 
@@ -1305,19 +1711,55 @@ impl Student {
             return true;
         }
         let q = query.to_lowercase();
+        let digits: String = query.chars().filter(char::is_ascii_digit).collect();
         let company = self.placement.as_ref().map(|p| p.company.as_str());
-        let thesis = self.phd.as_ref().map(|p| p.title.as_str());
-        [
-            Some(self.name.as_str()),
-            Some(self.b_number.as_str()),
-            Some(self.email.as_str()),
-            Some(self.course.as_str()),
-            company,
-            thesis,
-        ]
-        .into_iter()
-        .flatten()
-        .any(|field| field.to_lowercase().contains(&q))
+        let pos = self.pos.as_ref().map(|p| p.title.as_str());
+        let ic = self.ic.as_ref().map(|p| p.title.as_str());
+        let tcc = self.tcc.as_ref().map(|p| p.title.as_str());
+        // A CPF matches with or without its dots and dash.
+        let enrollment_digits: String = self.enrollment.chars().filter(char::is_ascii_digit).collect();
+        (digits.len() >= 3 && enrollment_digits.contains(&digits))
+            || [
+                Some(self.name.as_str()),
+                Some(self.enrollment.as_str()),
+                Some(self.email.as_str()),
+                Some(self.course.as_str()),
+                company,
+                pos,
+                ic,
+                tcc,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|field| field.to_lowercase().contains(&q))
+    }
+}
+
+/// Whether `text` is a valid CPF (11 digits with both check digits right),
+/// with or without dots and dash.
+pub fn is_cpf(text: &str) -> bool {
+    let digits: Vec<u32> = text.chars().filter_map(|c| c.to_digit(10)).collect();
+    let only_digits_and_marks = text.trim().chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-');
+    if digits.len() != 11 || !only_digits_and_marks || digits.iter().all(|d| *d == digits[0]) {
+        return false;
+    }
+    let check = |n: usize| {
+        let sum: u32 = digits[..n].iter().enumerate().map(|(i, d)| d * (n as u32 + 1 - i as u32)).sum();
+        (sum * 10 % 11) % 10
+    };
+    check(9) == digits[9] && check(10) == digits[10]
+}
+
+/// An enrolment number hidden behind dots: shaped like a CPF when it is
+/// one, otherwise one dot per character (at least 6, at most 12).
+pub fn masked(enrollment: &str) -> String {
+    let text = enrollment.trim();
+    if text.is_empty() {
+        String::new()
+    } else if is_cpf(text) {
+        "•••.•••.•••-••".into()
+    } else {
+        "•".repeat(text.chars().count().clamp(6, 12))
     }
 }
 
@@ -1345,13 +1787,15 @@ impl Default for Database {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EventKind {
-    FypMeeting,
+    /// TCC meetings and the TCC defence.
+    TccMeeting,
+    IcMeeting,
     Visit,
     AdviseeMeeting,
-    /// PhD supervision meetings and the viva.
-    PhdMeeting,
+    /// Postgraduate meetings and the defence.
+    PosMeeting,
     Deadline,
-    /// Advance notice of a PhD deadline.
+    /// Advance notice of a deadline.
     Reminder,
 }
 
@@ -1368,7 +1812,7 @@ pub struct Event {
     pub done: bool,
     /// An online meeting or visit.
     pub online: bool,
-    /// Service of an online item (online visits use Teams).
+    /// Service of an online item.
     pub platform: Platform,
     /// The meeting's own link, if it has one.
     pub link: String,
@@ -1391,6 +1835,25 @@ impl Event {
     pub fn meeting_id(&self) -> Option<Uuid> {
         let rest = self.uid.strip_prefix("meeting-")?;
         Uuid::parse_str(rest.get(..36)?).ok()
+    }
+
+    /// A dated item that isn't a meeting (deadlines, defences, …).
+    fn dated(uid: String, student_id: Uuid, date: NaiveDate, kind: EventKind, title: String, done: bool) -> Self {
+        Self {
+            uid,
+            student_id,
+            date,
+            time: None,
+            kind,
+            title,
+            done,
+            online: false,
+            platform: Platform::default(),
+            link: String::new(),
+            location: String::new(),
+            series: None,
+            cancelled: false,
+        }
     }
 }
 
@@ -1473,6 +1936,56 @@ fn push_meeting(
     }
 }
 
+/// A deadline and its reminder.
+fn push_step(out: &mut Vec<Event>, s: &Student, prefix: &str, what: &str, step: &Step, name: &str) {
+    let Some(due) = step.milestone.deadline else { return };
+    let label = step.label.to_lowercase();
+    out.push(Event::dated(
+        format!("{prefix}-{}-{}", step.key, s.id),
+        s.id,
+        due,
+        EventKind::Deadline,
+        format!("{what}: {label} – {name}"),
+        step.milestone.done,
+    ));
+    if let Some(remind) = step.milestone.reminder(step.lead) {
+        out.push(Event::dated(
+            format!("{prefix}-{}-reminder-{}", step.key, s.id),
+            s.id,
+            remind,
+            EventKind::Reminder,
+            format!("Lembrete: {what}: {label} em {} – {name}", pt::numeric(due)),
+            step.milestone.done,
+        ));
+    }
+}
+
+/// Things to chase about the deadlines of a project.
+fn step_attention(steps: Vec<Step>, today: NaiveDate, mut push: impl FnMut(Severity, String)) {
+    for step in steps {
+        let m = step.milestone;
+        let Some(due) = m.deadline.filter(|_| !m.done) else {
+            continue;
+        };
+        if due < today {
+            push(Severity::Overdue, format!("{}: prazo vencido em {}", step.label, pt::numeric(due)));
+        } else if m.reminder(step.lead).is_some_and(|r| r <= today) {
+            push(Severity::Pending, format!("{}: prazo em {}", step.label, pt::numeric(due)));
+        }
+    }
+}
+
+/// A grant ending soon, or that ended in the last month.
+fn grant_attention(grant: &Grant, today: NaiveDate, mut push: impl FnMut(Severity, String)) {
+    let Some(end) = grant.end() else { return };
+    let who = grant.agency_label();
+    if end < today && today - end <= Duration::days(GRANT_ENDED_DAYS) {
+        push(Severity::Pending, format!("bolsa {who} terminou em {}", pt::numeric(end)));
+    } else if end >= today && end <= today + Duration::days(GRANT_WARNING_DAYS) {
+        push(Severity::Pending, format!("bolsa {who} termina em {}", pt::numeric(end)));
+    }
+}
+
 /// Items of `events` in the next `days` days that are still to happen.
 pub fn upcoming(events: &[Event], today: NaiveDate, days: u32) -> Vec<&Event> {
     let end = today + Duration::days(i64::from(days));
@@ -1524,13 +2037,13 @@ impl Database {
         true
     }
 
-    pub fn b_number_taken(&self, b_number: &str, except: Option<Uuid>) -> bool {
-        let b = b_number.trim();
+    pub fn enrollment_taken(&self, enrollment: &str, except: Option<Uuid>) -> bool {
+        let b = enrollment.trim();
         !b.is_empty()
             && self
                 .students
                 .iter()
-                .any(|s| Some(s.id) != except && s.b_number.trim().eq_ignore_ascii_case(b))
+                .any(|s| Some(s.id) != except && s.enrollment.trim().eq_ignore_ascii_case(b))
     }
 
     /// Every dated item across all active (non-archived) students, including
@@ -1547,157 +2060,145 @@ impl Database {
     fn student_events(&self, s: &Student, out: &mut Vec<Event>) {
         let settings = &self.settings;
         let name = s.display_name();
-        if let Some(fyp) = &s.fyp {
-            let short = settings.programme_short(&fyp.programme);
-            for m in &fyp.meetings {
-                push_meeting(
-                    out,
-                    settings,
-                    s,
-                    m,
-                    EventKind::FypMeeting,
-                    format!("{short} project meeting – {name}"),
-                );
+        if let Some(tcc) = &s.tcc {
+            for m in &tcc.meetings {
+                push_meeting(out, settings, s, m, EventKind::TccMeeting, format!("Orientação de TCC – {name}"));
             }
-            for module in settings.modules_for(&fyp.programme) {
+            if let Some(date) = tcc.defense {
+                out.push(Event {
+                    time: tcc.defense_time,
+                    location: tcc.defense_location.trim().into(),
+                    ..Event::dated(
+                        format!("tcc-defense-{}", s.id),
+                        s.id,
+                        date,
+                        EventKind::TccMeeting,
+                        format!("Defesa de TCC – {name}"),
+                        !tcc.grade.trim().is_empty(),
+                    )
+                });
+            }
+            for module in settings.modules_for(&tcc.programme) {
                 for cw in &module.courseworks {
-                    let status = fyp.coursework.get(&cw.id);
+                    let status = tcc.coursework.get(&cw.id);
                     if let Some(date) = settings.effective_deadline(module, cw, status) {
-                        out.push(Event {
-                            uid: format!("cw-{}-{}", s.id, cw.id),
-                            student_id: s.id,
+                        out.push(Event::dated(
+                            format!("cw-{}-{}", s.id, cw.id),
+                            s.id,
                             date,
-                            time: None,
-                            kind: EventKind::Deadline,
-                            title: format!("{} {} due – {name}", module.code, cw.title),
-                            done: status.is_some_and(|st| st.submitted),
-                            online: false,
-                            platform: Platform::Teams,
-                            link: String::new(),
-                            location: String::new(),
-                            series: None,
-                            cancelled: false,
-                        });
+                            EventKind::Deadline,
+                            format!("{}: {} – {name}", module.code, cw.title),
+                            status.is_some_and(|st| st.submitted),
+                        ));
                     }
                 }
+            }
+        }
+        if let Some(ic) = &s.ic {
+            for m in &ic.meetings {
+                push_meeting(out, settings, s, m, EventKind::IcMeeting, format!("Orientação de IC – {name}"));
+            }
+            for step in ic.steps() {
+                push_step(out, s, "ic", "IC", &step, &name);
+            }
+            if let Some(end) = ic.grant.end() {
+                out.push(Event::dated(
+                    format!("ic-grant-end-{}", s.id),
+                    s.id,
+                    end,
+                    EventKind::Deadline,
+                    format!("Fim da bolsa {} (IC) – {name}", ic.grant.agency_label()),
+                    false,
+                ));
             }
         }
         if let Some(p) = &s.placement {
             for (i, v) in p.visits.iter().enumerate() {
                 if let Some(date) = v.date {
                     out.push(Event {
-                        uid: visit_uid(s.id, i),
-                        student_id: s.id,
-                        date,
                         time: v.time,
-                        kind: EventKind::Visit,
-                        title: format!(
-                            "Placement visit {} ({}) – {name} @ {}",
-                            i + 1,
-                            v.mode.label(),
-                            p.company
-                        ),
-                        done: v.completed,
                         online: v.mode == VisitMode::Online,
-                        platform: Platform::Teams,
-                        link: String::new(),
+                        platform: Platform::GoogleMeet,
                         location: match v.mode {
                             VisitMode::Online => String::new(),
                             VisitMode::FaceToFace => p.company.trim().into(),
                         },
-                        series: None,
-                        cancelled: false,
+                        ..Event::dated(
+                            visit_uid(s.id, i),
+                            s.id,
+                            date,
+                            EventKind::Visit,
+                            format!("Visita de estágio {} ({}) – {name} @ {}", i + 1, v.mode.label().to_lowercase(), p.company),
+                            v.completed,
+                        )
                     });
                 }
             }
+            if let Some(due) = p.report.deadline {
+                out.push(Event::dated(
+                    format!("placement-report-{}", s.id),
+                    s.id,
+                    due,
+                    EventKind::Deadline,
+                    format!("Estágio: relatório – {name}"),
+                    p.report.done,
+                ));
+            }
         }
-        if let Some(p) = &s.phd {
-            self.phd_events(s, p, &name, out);
+        if let Some(p) = &s.pos {
+            self.pos_events(s, p, &name, out);
         }
         if let Some(a) = &s.advisee {
-            for (sem, contact) in [("S1", &a.s1), ("S2", &a.s2)] {
+            for (sem, contact) in [("1º sem.", &a.s1), ("2º sem.", &a.s2)] {
                 for (i, m) in contact.meetings.iter().enumerate() {
-                    let label = if i == 0 { "meeting" } else { "follow-on" };
+                    let label = if i == 0 { "reunião" } else { "retorno" };
                     push_meeting(
                         out,
                         settings,
                         s,
                         m,
                         EventKind::AdviseeMeeting,
-                        format!("Advisee {sem} {label} – {name}"),
+                        format!("Tutoria {sem} ({label}) – {name}"),
                     );
                 }
             }
         }
     }
 
-    fn phd_events(&self, s: &Student, p: &PhdRecord, name: &str, out: &mut Vec<Event>) {
-        let degree = p.degree.short();
+    fn pos_events(&self, s: &Student, p: &PosRecord, name: &str, out: &mut Vec<Event>) {
+        let level = p.level.short();
         for m in &p.meetings {
-            push_meeting(
-                out,
-                &self.settings,
-                s,
-                m,
-                EventKind::PhdMeeting,
-                format!("{degree} supervision – {name}"),
-            );
+            push_meeting(out, &self.settings, s, m, EventKind::PosMeeting, format!("Orientação ({level}) – {name}"));
         }
-        if let Some(date) = p.viva {
-            let location = p.viva_location.trim();
+        if let Some(date) = p.defense {
             out.push(Event {
-                uid: format!("phd-viva-{}", s.id),
-                student_id: s.id,
-                date,
-                time: p.viva_time,
-                kind: EventKind::PhdMeeting,
-                title: format!("{degree} viva – {name}"),
-                done: p.outcome != VivaOutcome::Pending,
-                online: false,
-                platform: Platform::Teams,
-                link: String::new(),
-                location: location.into(),
-                series: None,
-                cancelled: false,
+                time: p.defense_time,
+                location: p.defense_location.trim().into(),
+                ..Event::dated(
+                    format!("pos-defense-{}", s.id),
+                    s.id,
+                    date,
+                    EventKind::PosMeeting,
+                    format!("Defesa ({level}) – {name}"),
+                    p.outcome != DefenseOutcome::Pending,
+                )
             });
         }
         if !p.status.active() {
             return;
         }
         for step in p.steps() {
-            let Some(due) = step.milestone.deadline else {
-                continue;
-            };
-            let what = step.label.to_lowercase();
-            let event = |uid: String, date, kind, title| Event {
-                uid,
-                student_id: s.id,
-                date,
-                time: None,
-                kind,
-                title,
-                done: step.milestone.done,
-                online: false,
-                platform: Platform::Teams,
-                link: String::new(),
-                location: String::new(),
-                series: None,
-                cancelled: false,
-            };
-            out.push(event(
-                format!("phd-{}-{}", step.key, s.id),
-                due,
+            push_step(out, s, "pos", level, &step, name);
+        }
+        if let Some(end) = p.grant.end() {
+            out.push(Event::dated(
+                format!("pos-grant-end-{}", s.id),
+                s.id,
+                end,
                 EventKind::Deadline,
-                format!("{degree} {what} due – {name}"),
+                format!("Fim da bolsa {} ({level}) – {name}", p.grant.agency_label()),
+                false,
             ));
-            if let Some(remind) = step.milestone.reminder(step.lead) {
-                out.push(event(
-                    format!("phd-{}-reminder-{}", step.key, s.id),
-                    remind,
-                    EventKind::Reminder,
-                    format!("Reminder: {degree} {what} due {} – {name}", due.format("%d %b %Y")),
-                ));
-            }
         }
     }
 
@@ -1807,8 +2308,8 @@ impl Database {
         })
     }
 
-    /// The meeting (whole series if it repeats) or visit `uid` of one
-    /// student, ready for an invite file.
+    /// The meeting (whole series if it repeats), visit or defence `uid` of
+    /// one student, ready for an invite file.
     pub fn invite(&self, student_id: Uuid, uid: &str) -> Option<CalItem> {
         let s = self.student(student_id)?;
         let mut events = Vec::new();
@@ -1831,34 +2332,37 @@ impl Database {
     /// Things that need chasing, most urgent first.
     pub fn attention(&self, today: NaiveDate) -> Vec<Attention> {
         let mut out = Vec::new();
-        let mut push = |student: &Student, severity, message: String| {
-            out.push(Attention {
-                student_id: student.id,
-                severity,
-                message: format!("{} – {message}", student.display_name()),
-            })
-        };
         for s in self.students.iter().filter(|s| !s.archived) {
-            if let Some(fyp) = &s.fyp {
-                if !fyp.initial_contact {
-                    push(s, Severity::Pending, "no initial contact yet".into());
+            let mut push = |severity, message: String| {
+                out.push(Attention {
+                    student_id: s.id,
+                    severity,
+                    message: format!("{} – {message}", s.display_name()),
+                })
+            };
+            if let Some(tcc) = &s.tcc {
+                if !tcc.initial_contact {
+                    push(Severity::Pending, "TCC: ainda sem contato inicial".into());
                 }
-                for module in self.settings.modules_for(&fyp.programme) {
+                for module in self.settings.modules_for(&tcc.programme) {
                     for cw in &module.courseworks {
-                        let status = fyp.coursework.get(&cw.id);
+                        let status = tcc.coursework.get(&cw.id);
                         let submitted = status.is_some_and(|st| st.submitted);
                         if let Some(due) = self.settings.effective_deadline(module, cw, status)
                             && !submitted
                             && due < today
                         {
                             push(
-                                s,
                                 Severity::Overdue,
-                                format!("{} {} not submitted (due {due})", module.code, cw.title),
+                                format!("{}: {} não entregue (prazo {})", module.code, cw.title, pt::numeric(due)),
                             );
                         }
                     }
                 }
+            }
+            if let Some(ic) = &s.ic {
+                step_attention(ic.steps(), today, |sev, msg| push(sev, format!("IC: {msg}")));
+                grant_attention(&ic.grant, today, |sev, msg| push(sev, format!("IC: {msg}")));
             }
             if let Some(p) = &s.placement {
                 for (i, v) in p.visits.iter().enumerate() {
@@ -1871,42 +2375,37 @@ impl Database {
                         } else {
                             Severity::Pending
                         };
-                        push(s, severity, format!("visit {} request: {}", i + 1, v.response.label().to_lowercase()));
+                        push(severity, format!("visita {} de estágio: {}", i + 1, v.response.label().to_lowercase()));
                     }
                     if v.date.is_some() && v.line_manager_attending == TriState::Unknown {
-                        push(s, Severity::Pending, format!("visit {}: line manager attendance unknown", i + 1));
+                        push(Severity::Pending, format!("visita {}: presença do supervisor da empresa não confirmada", i + 1));
                     }
+                }
+                if let Some(due) = p.report.deadline.filter(|_| !p.report.done)
+                    && due < today
+                {
+                    push(Severity::Overdue, format!("relatório de estágio não entregue (prazo {})", pt::numeric(due)));
+                }
+                if let Some(end) = p.tce_end
+                    && end >= today
+                    && end <= today + Duration::days(TCE_WARNING_DAYS)
+                {
+                    push(Severity::Pending, format!("termo de compromisso de estágio termina em {}", pt::numeric(end)));
                 }
             }
-            if let Some(p) = s.phd.as_ref().filter(|p| p.status.active()) {
-                for step in p.steps() {
-                    let m = step.milestone;
-                    let Some(due) = m.deadline.filter(|_| !m.done) else {
-                        continue;
-                    };
-                    if due < today {
-                        push(s, Severity::Overdue, format!("{} overdue (due {due})", step.label));
-                    } else if m.reminder(step.lead).is_some_and(|r| r <= today) {
-                        push(s, Severity::Pending, format!("{} due {due}", step.label));
-                    }
-                }
-                if let Some(end) = p.visa_end.filter(|_| !p.external) {
-                    if end < today {
-                        push(s, Severity::Overdue, format!("visa ended {end}"));
-                    } else if end <= today + Duration::days(VISA_WARNING_DAYS) {
-                        push(s, Severity::Pending, format!("visa ends {end}"));
-                    }
-                }
+            if let Some(p) = s.pos.as_ref().filter(|p| p.status.active()) {
+                step_attention(p.steps(), today, &mut push);
+                grant_attention(&p.grant, today, &mut push);
             }
             if let Some(a) = &s.advisee {
-                for (sem, c) in [("S1", &a.s1), ("S2", &a.s2)] {
+                for (sem, c) in [("1º sem.", &a.s1), ("2º sem.", &a.s2)] {
                     if c.contacted_on.is_some() && c.reply != ReplyStatus::Replied {
                         let severity = if c.reply == ReplyStatus::NoReply {
                             Severity::Overdue
                         } else {
                             Severity::Pending
                         };
-                        push(s, severity, format!("advisee {sem}: {}", c.reply.label().to_lowercase()));
+                        push(severity, format!("tutoria {sem}: {}", c.reply.label().to_lowercase()));
                     }
                 }
             }
@@ -1927,78 +2426,52 @@ mod tests {
     #[test]
     fn deadline_from_week_and_override() {
         let mut settings = Settings {
-            sem1_start: Some(d(2026, 9, 21)),
+            sem1_start: Some(d(2026, 3, 2)),
             ..Default::default()
         };
-        let module = settings.modules[0].clone();
-        let cw = &module.courseworks[0]; // Week 8
-        assert_eq!(settings.template_deadline(&module, cw), Some(d(2026, 11, 9)));
+        let mut module = settings.modules[0].clone();
+        module.courseworks[0].week = Some(8);
+        let cw = &module.courseworks[0];
+        assert_eq!(settings.template_deadline(&module, cw), Some(d(2026, 4, 20)));
 
         let status = CwStatus {
-            deadline_override: Some(d(2026, 11, 20)),
+            deadline_override: Some(d(2026, 4, 27)),
             ..Default::default()
         };
-        assert_eq!(
-            settings.effective_deadline(&module, cw, Some(&status)),
-            Some(d(2026, 11, 20))
-        );
+        assert_eq!(settings.effective_deadline(&module, cw, Some(&status)), Some(d(2026, 4, 27)));
 
         settings.sem1_start = None;
         assert_eq!(settings.template_deadline(&module, cw), None);
     }
 
     #[test]
-    fn modules_per_programme() {
+    fn default_course_and_disciplines_are_generic() {
         let s = Settings::default();
         let codes = |p| s.modules_for(p).map(|m| m.code.clone()).collect::<Vec<_>>();
-        assert_eq!(codes("BEng"), ["MEC526", "MEC528"]);
-        assert_eq!(codes("Sust"), ["MEC526", "MEC528"]);
-        assert_eq!(codes("MEng"), ["EEE840"]);
-        assert_eq!(codes("MEngGermany"), ["EEE802"]);
-        assert_eq!(s.programme_lists(), ["BEng", "MEng", "SUST"]);
-    }
-
-    #[test]
-    fn older_files_still_load() {
-        // Before courses were editable: `kind` enum names and no `programmes`.
-        let json = r#"{"version":1,"settings":{"academic_year":"2026/27","modules":[
-            {"code":"EEE802","name":"x","semester":"FullYear","applies_to":["MEngGermany"],"courseworks":[]}]},
-            "students":[{"name":"Tom","fyp":{"kind":"MEngGermany","meetings":[{"date":"2026-10-01","held":true}]}}]}"#;
-        let db: Database = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            db.students[0].fyp.as_ref().unwrap().programme,
-            "MEngGermany"
-        );
-        assert_eq!(db.settings.programme("MEngGermany").unwrap().list, "MEng");
-        assert_eq!(db.settings.modules_for("MEngGermany").count(), 1);
-        assert!(
-            db.students[0].fyp.as_ref().unwrap().meetings[0]
-                .repeat
-                .is_none()
-        );
+        assert_eq!(codes("graduacao"), ["TCC I", "TCC II"]);
+        assert_eq!(s.programme_lists(), ["TCC"]);
+        assert!(s.modules.iter().flat_map(|m| &m.courseworks).all(|c| c.week.is_none() && c.deadline.is_none()));
+        assert!(s.hide_enrollment && !s.reveal_needs_password);
     }
 
     #[test]
     fn teaching_calendar() {
         let mut s = Settings {
-            sem1_start: Some(d(2026, 9, 21)),
-            sem2_start: Some(d(2027, 1, 25)),
+            sem1_start: Some(d(2026, 3, 2)),
+            sem2_start: Some(d(2026, 8, 3)),
             ..Default::default()
         };
-        // Friday of week 12 unless set.
-        assert_eq!(s.teaching_end(Semester::S1), Some(d(2026, 12, 11)));
-        assert_eq!(s.teaching_week(d(2026, 9, 21)), Some((Semester::S1, 1)));
-        assert_eq!(s.teaching_week(d(2026, 10, 26)), Some((Semester::S1, 6)));
-        assert_eq!(s.teaching_week(d(2026, 12, 14)), None);
-        s.sem1_teaching_end = Some(d(2026, 12, 18));
-        assert_eq!(s.teaching_week(d(2026, 12, 14)), Some((Semester::S1, 13)));
-        assert_eq!(s.semester_of(d(2027, 2, 1)), Semester::S2);
-        assert_eq!(s.teaching_end(Semester::S2), Some(d(2027, 4, 16)));
-        // Week 1 starting mid-week still ends on the Friday of week 12.
-        assert_eq!(
-            Settings::default_teaching_end(d(2026, 9, 23)),
-            d(2026, 12, 11)
-        );
+        // Friday of week 18 unless set.
+        assert_eq!(s.teaching_end(Semester::S1), Some(d(2026, 7, 3)));
+        assert_eq!(s.teaching_week(d(2026, 3, 2)), Some((Semester::S1, 1)));
+        assert_eq!(s.teaching_week(d(2026, 4, 6)), Some((Semester::S1, 6)));
+        assert_eq!(s.teaching_week(d(2026, 7, 6)), None);
+        s.sem1_teaching_end = Some(d(2026, 7, 10));
+        assert_eq!(s.teaching_week(d(2026, 7, 6)), Some((Semester::S1, 19)));
+        assert_eq!(s.semester_of(d(2026, 8, 10)), Semester::S2);
+        assert_eq!(s.teaching_end(Semester::S2), Some(d(2026, 12, 4)));
+        // Week 1 starting mid-week still ends on the Friday of week 18.
+        assert_eq!(Settings::default_teaching_end(d(2026, 3, 4)), d(2026, 7, 3));
     }
 
     #[test]
@@ -2025,8 +2498,8 @@ mod tests {
                 },
                 ..Default::default()
             }),
-            phd: Some(PhdRecord {
-                viva: Some(d(2026, 10, 7)),
+            pos: Some(PosRecord {
+                defense: Some(d(2026, 10, 7)),
                 ..Default::default()
             }),
             ..Default::default()
@@ -2054,15 +2527,16 @@ mod tests {
         assert!(!find(&db, &weekly.occurrence_uid(d(2026, 10, 13))).done);
 
         // Not meetings.
-        let viva = find(&db, &format!("phd-viva-{}", db.students[0].id));
-        assert_eq!(viva.meeting_id(), None);
-        assert!(!db.change_meeting(&viva, MeetingChange::Held(true)));
+        let defense = find(&db, &format!("pos-defense-{}", db.students[0].id));
+        assert_eq!(defense.meeting_id(), None);
+        assert!(!db.change_meeting(&defense, MeetingChange::Held(true)));
     }
 
     #[test]
     fn repeating_meeting_weeks() {
         let settings = Settings {
-            sem1_start: Some(d(2026, 9, 21)),
+            sem2_start: Some(d(2026, 8, 3)),
+            sem2_teaching_end: Some(d(2026, 12, 11)),
             ..Default::default()
         };
         let mut m = Meeting {
@@ -2108,9 +2582,9 @@ mod tests {
             ..Default::default()
         };
         let student = Student {
-            name: "Ada".into(),
-            email: "ada@ulster.ac.uk".into(),
-            fyp: Some(FypRecord {
+            name: "Aluna Exemplo".into(),
+            email: "aluna@exemplo.edu.br".into(),
+            tcc: Some(TccRecord {
                 meetings: vec![m.clone()],
                 ..Default::default()
             }),
@@ -2122,19 +2596,15 @@ mod tests {
         let events: Vec<_> = db
             .events()
             .into_iter()
-            .filter(|e| e.kind == EventKind::FypMeeting)
+            .filter(|e| e.kind == EventKind::TccMeeting)
             .collect();
         assert_eq!(events.len(), 6);
         assert_eq!(events.iter().filter(|e| e.cancelled).count(), 1);
-        assert!(
-            events
-                .iter()
-                .any(|e| e.moved() && e.date == d(2026, 11, 17))
-        );
+        assert!(events.iter().any(|e| e.moved() && e.date == d(2026, 11, 17)));
         let all = db.events();
         let meetings = upcoming(&all, d(2026, 11, 1), 30)
             .iter()
-            .filter(|e| e.kind == EventKind::FypMeeting)
+            .filter(|e| e.kind == EventKind::TccMeeting)
             .count();
         assert_eq!(meetings, 4, "cancelled week not upcoming");
 
@@ -2147,10 +2617,7 @@ mod tests {
         assert_eq!(rule.exceptions.len(), 2);
 
         // Picking two weeks: one series as a series, two events otherwise.
-        let picked = [
-            m.occurrence_uid(d(2026, 11, 2)),
-            m.occurrence_uid(d(2026, 11, 30)),
-        ];
+        let picked = [m.occurrence_uid(d(2026, 11, 2)), m.occurrence_uid(d(2026, 11, 30))];
         assert_eq!(db.cal_items(|e| picked.contains(&e.uid), true).len(), 1);
         let singles = db.cal_items(|e| picked.contains(&e.uid), false);
         assert_eq!(singles.len(), 2);
@@ -2161,13 +2628,15 @@ mod tests {
     fn serde_round_trip() {
         let mut db = Database::default();
         let mut s = Student {
-            name: "Ada".into(),
-            fyp: Some(FypRecord::default()),
+            name: "Aluna Exemplo".into(),
+            tcc: Some(TccRecord::default()),
+            ic: Some(IcRecord::new()),
             placement: Some(PlacementRecord::default()),
             advisee: Some(AdviseeRecord::default()),
+            pos: Some(PosRecord::new(Level::DoutoradoAcademico)),
             ..Default::default()
         };
-        s.fyp.as_mut().unwrap().meetings.push(Meeting {
+        s.tcc.as_mut().unwrap().meetings.push(Meeting {
             date: Some(d(2026, 10, 1)),
             ..Default::default()
         });
@@ -2175,6 +2644,9 @@ mod tests {
         let json = serde_json::to_string(&db).unwrap();
         let back: Database = serde_json::from_str(&json).unwrap();
         assert_eq!(db, back);
+        // Fields added later default when missing.
+        let p: PosRecord = serde_json::from_str("{}").unwrap();
+        assert_eq!(p, PosRecord::default());
     }
 
     #[test]
@@ -2183,21 +2655,21 @@ mod tests {
         let meeting = Meeting {
             date: Some(d(2026, 10, 30)),
             online: true,
-            location: "MG.201".into(),
+            location: "Sala 201".into(),
             ..Default::default()
         };
         let mut placement = PlacementRecord {
-            company: "Bombardier".into(),
-            line_manager_name: "J. Smith".into(),
-            line_manager_email: "j.smith@company.com".into(),
+            company: "Empresa Exemplo Ltda.".into(),
+            line_manager_name: "Supervisora Exemplo".into(),
+            line_manager_email: "supervisora@empresa.com.br".into(),
             ..Default::default()
         };
         placement.visits[1].date = Some(d(2026, 11, 5));
         placement.visits[1].line_manager_attending = TriState::Yes;
         let student = Student {
-            name: "Ada".into(),
-            email: "ada@ulster.ac.uk".into(),
-            fyp: Some(FypRecord {
+            name: "Aluna Exemplo".into(),
+            email: "aluna@exemplo.edu.br".into(),
+            tcc: Some(TccRecord {
                 meetings: vec![meeting.clone()],
                 ..Default::default()
             }),
@@ -2209,33 +2681,30 @@ mod tests {
 
         let inv = db.invite(id, &meeting.uid()).unwrap();
         assert!(inv.event.online);
-        assert_eq!(inv.event.location, "", "Teams meetings ignore the room");
+        assert_eq!(inv.event.location, "", "online meetings ignore the room");
         assert_eq!(inv.attendees.len(), 1);
-        assert_eq!(inv.attendees[0].email, "ada@ulster.ac.uk");
+        assert_eq!(inv.attendees[0].email, "aluna@exemplo.edu.br");
 
-        // Face-to-face visit: line manager invited, company as the location.
+        // Face-to-face visit: company supervisor invited, company as the location.
         let inv = db.invite(id, &visit_uid(id, 1)).unwrap();
         assert!(!inv.event.online);
-        assert_eq!(inv.event.location, "Bombardier");
+        assert_eq!(inv.event.location, "Empresa Exemplo Ltda.");
         assert_eq!(inv.attendees.len(), 2);
         db.students[0].placement.as_mut().unwrap().visits[1].line_manager_attending = TriState::No;
         assert_eq!(db.invite(id, &visit_uid(id, 1)).unwrap().attendees.len(), 1);
 
         assert!(db.invite(id, "meeting-unknown").is_none());
 
-        db.students[0].fyp.as_mut().unwrap().meetings[0].online = false;
-        assert_eq!(
-            db.invite(id, &meeting.uid()).unwrap().event.location,
-            "MG.201"
-        );
+        db.students[0].tcc.as_mut().unwrap().meetings[0].online = false;
+        assert_eq!(db.invite(id, &meeting.uid()).unwrap().event.location, "Sala 201");
     }
 
     #[test]
     fn attention_flags_no_reply_and_missing_contact() {
         let mut db = Database::default();
         db.students.push(Student {
-            name: "Bob".into(),
-            fyp: Some(FypRecord::default()),
+            name: "Aluno Exemplo".into(),
+            tcc: Some(TccRecord::default()),
             advisee: Some(AdviseeRecord {
                 s1: SemesterContact {
                     contacted_on: Some(d(2026, 9, 25)),
@@ -2249,142 +2718,163 @@ mod tests {
         let items = db.attention(d(2026, 10, 21));
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].severity, Severity::Overdue);
+        assert_eq!(items[0].message, "Aluno Exemplo – tutoria 1º sem.: sem resposta");
     }
 
-    /// The example from the university system: start 14 Sep 2026.
-    fn example_phd() -> PhdRecord {
-        let due = |date| Milestone {
-            deadline: Some(date),
-            ..Default::default()
+    /// A doctorate started on 1 Mar 2026, with the default rules.
+    fn example_doctorate() -> PosRecord {
+        let mut p = PosRecord {
+            start: Some(d(2026, 3, 1)),
+            grant: Grant {
+                agency: "CAPES".into(),
+                modality: "Demanda Social".into(),
+                ..Default::default()
+            },
+            ..PosRecord::new(Level::DoutoradoAcademico)
         };
-        PhdRecord {
-            start: Some(d(2026, 9, 14)),
-            end: Some(d(2029, 9, 14)),
-            initial: due(d(2027, 3, 3)),
-            confirmation: due(d(2027, 12, 3)),
-            final_assessment: due(d(2029, 3, 3)),
-            annual_reports: vec![due(d(2027, 5, 1))],
-            examiners: due(d(2029, 6, 3)),
-            intention: due(d(2029, 6, 3)),
-            submission: due(d(2029, 9, 3)),
-            ..Default::default()
-        }
+        p.suggest(&LevelRule::default_for(Level::DoutoradoAcademico));
+        p
     }
 
     #[test]
-    fn phd_reminders_match_the_university_system() {
-        let p = example_phd();
-        let reminders: Vec<(String, Option<NaiveDate>)> = p
-            .steps()
-            .iter()
-            .map(|s| (s.label.clone(), s.milestone.reminder(s.lead)))
-            .collect();
+    fn suggested_deadlines_follow_the_rules_of_the_level() {
+        let p = example_doctorate();
+        let deadlines: Vec<(String, Option<NaiveDate>)> =
+            p.steps().iter().map(|s| (s.label.clone(), s.milestone.deadline)).collect();
         assert_eq!(
-            reminders,
+            deadlines,
             [
-                ("Initial assessment", Some(d(2026, 12, 3))),
-                ("Confirmation assessment", Some(d(2027, 8, 3))),
-                ("Final assessment", Some(d(2028, 8, 3))),
-                ("Annual report 2027", Some(d(2027, 4, 1))),
-                ("Appoint examiners", Some(d(2029, 5, 3))),
-                ("Intention to submit", Some(d(2029, 5, 3))),
-                ("Thesis submission", Some(d(2029, 8, 3))),
-                ("Amendments", None),
+                ("Integralização dos créditos", Some(d(2028, 3, 1))),
+                ("Proficiência em língua estrangeira", Some(d(2028, 3, 1))),
+                ("Exame de qualificação", Some(d(2028, 3, 1))),
+                ("Relatório anual 2027", Some(d(2027, 3, 1))),
+                ("Relatório anual 2028", Some(d(2028, 3, 1))),
+                ("Relatório anual 2029", Some(d(2029, 3, 1))),
+                ("Envio da tese à banca", Some(d(2030, 2, 1))),
+                ("Prazo para a defesa da tese", Some(d(2030, 3, 1))),
+                ("Entrega da versão final", None),
             ]
             .map(|(label, date)| (label.to_string(), date))
         );
-        assert_eq!(p.year_of_study(d(2026, 9, 13)), None);
-        assert_eq!(p.year_of_study(d(2026, 9, 14)), Some(1));
-        assert_eq!(p.year_of_study(d(2027, 9, 14)), Some(2));
-        assert_eq!(p.next_step().map(|s| s.label), Some("Initial assessment".into()));
+        // CAPES: 48 months for a doctorate, ending the day before.
+        assert_eq!(p.grant.months, 48);
+        assert_eq!(p.grant.end(), Some(d(2030, 2, 28)));
+        assert_eq!(p.year_of_study(d(2026, 2, 28)), None);
+        assert_eq!(p.year_of_study(d(2027, 3, 1)), Some(2));
+
+        // A parental-leave extension adds to the grant and to the course.
+        let mut q = p.clone();
+        q.grant.extension_months = 6;
+        q.extension_months = 6;
+        assert_eq!(q.grant.end(), Some(d(2030, 8, 31)));
+        assert_eq!(q.rule_deadline(&LevelRule::default_for(q.level)), Some(d(2030, 9, 1)));
+
+        // Dates already set are kept.
+        let mut r = p.clone();
+        r.qualification.deadline = Some(d(2027, 12, 15));
+        r.suggest(&LevelRule::default_for(r.level));
+        assert_eq!(r.qualification.deadline, Some(d(2027, 12, 15)));
     }
 
     #[test]
-    fn phd_milestones_are_editable_by_key() {
-        let mut p = example_phd();
+    fn lato_sensu_and_postdocs_have_fewer_steps() {
+        let keys = |p: &PosRecord| p.steps().into_iter().map(|s| s.key).collect::<Vec<_>>();
+        assert_eq!(keys(&PosRecord::new(Level::Especializacao)), ["credits", "submission", "final", "final-version"]);
+        assert_eq!(keys(&PosRecord::new(Level::PosDoutorado)), ["final", "final-version"]);
+        assert_eq!(PosRecord::new(Level::MestradoProfissional).group(), PosGroup::MestradoProfissional);
+        assert_eq!(PosRecord::new(Level::DoutoradoProfissional).group(), PosGroup::Doutorado);
+    }
+
+    #[test]
+    fn milestones_are_editable_by_key() {
+        let mut p = example_doctorate();
         for step in p.steps() {
             assert!(p.milestone_mut(&step.key).is_some(), "{}", step.key);
         }
         p.milestone_mut("annual1").unwrap().done = true;
         assert!(p.annual_reports[0].done);
-        assert!(p.milestone_mut("annual2").is_none());
+        assert!(p.milestone_mut("annual9").is_none());
         assert!(p.milestone_mut("annual0").is_none());
+        let mut ic = IcRecord::new();
+        for step in ic.steps() {
+            assert!(ic.milestone_mut(&step.key).is_some(), "{}", step.key);
+        }
     }
 
     #[test]
-    fn phd_deadlines_reminders_and_attention() {
-        let mut p = example_phd();
-        p.visa_end = Some(d(2027, 1, 10));
+    fn deadlines_reminders_and_attention() {
+        let p = example_doctorate();
         let db = Database {
             students: vec![Student {
-                name: "Priya".into(),
-                phd: Some(p),
+                name: "Doutoranda Exemplo".into(),
+                pos: Some(p),
                 ..Default::default()
             }],
             ..Default::default()
         };
         let events = db.events();
-        let deadlines = events.iter().filter(|e| e.kind == EventKind::Deadline).count();
         let reminders: Vec<&Event> = events.iter().filter(|e| e.kind == EventKind::Reminder).collect();
-        assert_eq!(deadlines, 7);
-        assert_eq!(reminders.len(), 7);
-        assert_eq!(reminders[0].date, d(2026, 12, 3));
-        assert_eq!(reminders[0].title, "Reminder: PhD initial assessment due 03 Mar 2027 – Priya");
-
-        // Reminder date passed: pending. Visa within 90 days: pending.
-        let items = db.attention(d(2026, 12, 10));
-        let messages: Vec<&str> = items.iter().map(|a| a.message.as_str()).collect();
+        assert_eq!(reminders[0].date, d(2027, 2, 1));
         assert_eq!(
-            messages,
-            ["Priya – Initial assessment due 2027-03-03", "Priya – visa ends 2027-01-10"]
+            reminders[0].title,
+            "Lembrete: Doutorado: relatório anual 2027 em 01/03/2027 – Doutoranda Exemplo"
         );
-        // Deadline passed: overdue, listed first.
-        let items = db.attention(d(2027, 3, 4));
-        assert_eq!(items[0].severity, Severity::Overdue);
-        assert!(items[0].message.contains("Initial assessment overdue"));
+        assert!(events.iter().any(|e| e.title == "Fim da bolsa CAPES (Doutorado) – Doutoranda Exemplo"));
 
-        // Met deadlines, and students who have finished, raise nothing.
+        // Reminder date passed: pending.
+        let items = db.attention(d(2027, 2, 10));
+        let messages: Vec<&str> = items.iter().map(|a| a.message.as_str()).collect();
+        assert_eq!(messages, ["Doutoranda Exemplo – Relatório anual 2027: prazo em 01/03/2027"]);
+        // Deadline passed: overdue, listed first.
+        let items = db.attention(d(2027, 3, 2));
+        assert_eq!(items[0].severity, Severity::Overdue);
+        assert!(items[0].message.contains("prazo vencido em 01/03/2027"));
+        // Grant ending within 90 days.
+        let items = db.attention(d(2030, 1, 15));
+        assert!(items.iter().any(|a| a.message.ends_with("bolsa CAPES termina em 28/02/2030")));
+
+        // Students who have finished raise nothing.
         let mut db = db;
-        let p = db.students[0].phd.as_mut().unwrap();
-        p.initial.done = true;
-        p.visa_end = None;
-        assert!(db.attention(d(2026, 12, 10)).is_empty());
-        db.students[0].phd.as_mut().unwrap().status = ResearchStatus::Awarded;
+        db.students[0].pos.as_mut().unwrap().status = PosStatus::Graduated;
         assert!(db.attention(d(2027, 3, 4)).is_empty());
         assert!(db.events().iter().all(|e| e.kind != EventKind::Deadline));
     }
 
     #[test]
-    fn files_without_phd_records_still_load() {
-        let json = r#"{"version":1,"students":[{"name":"Old","fyp":{"programme":"BEng"}}]}"#;
-        let db: Database = serde_json::from_str(json).unwrap();
-        assert!(db.students[0].phd.is_none());
-        let p: PhdRecord = serde_json::from_str("{}").unwrap();
-        assert_eq!(p, PhdRecord::default());
+    fn ic_reports_follow_the_grant() {
+        let mut ic = IcRecord::new();
+        ic.grant.start = Some(d(2026, 9, 1));
+        ic.suggest();
+        assert_eq!(ic.partial_report.deadline, Some(d(2027, 3, 1)));
+        assert_eq!(ic.final_report.deadline, Some(d(2027, 8, 31)));
+        assert_eq!(ic.grant.end(), Some(d(2027, 8, 31)));
+        assert_eq!(ic.next_step().map(|s| s.label), Some("Relatório parcial".into()));
+
+        let db = Database {
+            students: vec![Student {
+                name: "Bolsista Exemplo".into(),
+                ic: Some(ic),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let items = db.attention(d(2027, 2, 10));
+        assert_eq!(items[0].message, "Bolsista Exemplo – IC: Relatório parcial: prazo em 01/03/2027");
     }
 
     #[test]
-    fn older_teams_meetings_load_as_online() {
-        let m: Meeting = serde_json::from_str(r#"{"teams":true}"#).unwrap();
-        assert!(m.online);
-        assert_eq!(m.platform, Platform::Teams);
-    }
-
-    #[test]
-    fn external_students_start_blank_with_their_own_deadlines() {
-        let mut p = ResearchGroup::MscExternal.new_record();
-        assert_eq!((p.degree, p.external, p.group()), (ResearchDegree::MSc, true, ResearchGroup::MscExternal));
-        let keys = |p: &PhdRecord| p.steps().into_iter().map(|s| s.key).collect::<Vec<_>>();
-        assert_eq!(keys(&p), ["amendments"], "no standard assessments");
-        assert_eq!(ResearchGroup::Phd.new_record().group(), ResearchGroup::Phd);
-        assert!(keys(&ResearchGroup::Phd.new_record()).contains(&"initial".to_string()));
+    fn external_students_can_leave_out_the_standard_steps() {
+        let mut p = PosRecord {
+            external: true,
+            skip_standard: true,
+            ..PosRecord::new(Level::MestradoAcademico)
+        };
+        let keys = |p: &PosRecord| p.steps().into_iter().map(|s| s.key).collect::<Vec<_>>();
+        assert_eq!(keys(&p), ["final-version"]);
 
         let exam = CustomStep {
-            title: "Qualifying exam".into(),
-            milestone: Milestone {
-                deadline: Some(d(2027, 4, 30)),
-                ..Default::default()
-            },
+            title: "Seminário de acompanhamento".into(),
+            milestone: Milestone::due(Some(d(2027, 4, 30))),
             remind: Lead { amount: 10, unit: LeadUnit::Days },
             ..Default::default()
         };
@@ -2392,8 +2882,8 @@ mod tests {
         p.custom_steps.push(exam);
         let mut db = Database {
             students: vec![Student {
-                name: "Ana".into(),
-                phd: Some(p),
+                name: "Mestranda Exemplo".into(),
+                pos: Some(p),
                 ..Default::default()
             }],
             ..Default::default()
@@ -2403,35 +2893,80 @@ mod tests {
         assert_eq!(
             titles,
             [
-                (d(2027, 4, 20), "Reminder: MSc qualifying exam due 30 Apr 2027 – Ana"),
-                (d(2027, 4, 30), "MSc qualifying exam due – Ana"),
+                (d(2027, 4, 20), "Lembrete: Mestrado: seminário de acompanhamento em 30/04/2027 – Mestranda Exemplo"),
+                (d(2027, 4, 30), "Mestrado: seminário de acompanhamento – Mestranda Exemplo"),
             ]
         );
         assert!(db.attention(d(2027, 4, 19)).is_empty());
         assert_eq!(db.attention(d(2027, 4, 20)).len(), 1);
 
-        // Completed through the step key, like the standard steps.
-        db.students[0].phd.as_mut().unwrap().milestone_mut(&key).unwrap().done = true;
+        db.students[0].pos.as_mut().unwrap().milestone_mut(&key).unwrap().done = true;
         assert!(db.attention(d(2027, 5, 1)).is_empty());
 
-        // No reminder when the lead is 0.
         assert_eq!(Lead { amount: 0, unit: LeadUnit::Weeks }.before(d(2027, 4, 30)), None);
         assert_eq!(Lead::months(1).before(d(2027, 3, 31)), Some(d(2027, 2, 28)));
     }
 
     #[test]
-    fn external_students_have_no_visa_warnings() {
-        let mut p = example_phd();
-        p.visa_end = Some(d(2026, 12, 1));
-        p.external = true;
-        p.skip_standard = true;
+    fn cpf_is_recognised_and_masked() {
+        // Valid check digits (a made-up number, not a real person's).
+        assert!(is_cpf("529.982.247-25"));
+        assert!(is_cpf("52998224725"));
+        assert!(!is_cpf("529.982.247-24"));
+        assert!(!is_cpf("111.111.111-11"));
+        assert!(!is_cpf("2026001234"));
+        assert_eq!(masked("529.982.247-25"), "•••.•••.•••-••");
+        assert_eq!(masked("2026"), "••••••");
+        assert_eq!(masked(""), "");
+
+        // Searching by CPF works with or without punctuation; names and
+        // calendar titles never include the number.
+        let s = Student {
+            name: "Aluna Exemplo".into(),
+            enrollment: "529.982.247-25".into(),
+            ..Default::default()
+        };
+        assert!(s.matches("52998224725"));
+        assert!(s.matches("982.247"));
+        assert_eq!(s.display_name(), "Aluna Exemplo");
+        assert_eq!(Student::default().display_name(), "(aluno sem nome)");
+    }
+
+    #[test]
+    fn agencies_include_federal_and_all_state_foundations() {
+        let states: HashSet<&str> = AGENCIES.iter().filter(|a| a.kind == AgencyKind::State).map(|a| a.uf).collect();
+        assert_eq!(states.len(), 27, "one FAP per state and the DF");
+        for id in ["CNPq", "CAPES", "FAPESP", "FACEPE", "FAPEMIG", "FAPERJ"] {
+            assert!(agency_by_id(id).is_some(), "{id}");
+        }
+        let ids: HashSet<&str> = AGENCIES.iter().map(|a| a.id).collect();
+        assert_eq!(ids.len(), AGENCIES.len(), "ids are unique");
+    }
+
+    #[test]
+    fn placement_report_and_agreement() {
+        let mut p = PlacementRecord {
+            tce_end: Some(d(2026, 11, 10)),
+            report: Milestone::due(Some(d(2026, 10, 20))),
+            ..Default::default()
+        };
+        p.visits[0].request_sent = Some(d(2026, 10, 1));
         let db = Database {
             students: vec![Student {
-                phd: Some(p),
+                name: "Estagiário Exemplo".into(),
+                placement: Some(p),
                 ..Default::default()
             }],
             ..Default::default()
         };
-        assert!(db.attention(d(2026, 11, 20)).is_empty());
+        let messages: Vec<String> = db.attention(d(2026, 10, 25)).into_iter().map(|a| a.message).collect();
+        assert_eq!(
+            messages,
+            [
+                "Estagiário Exemplo – relatório de estágio não entregue (prazo 20/10/2026)",
+                "Estagiário Exemplo – visita 1 de estágio: aguardando resposta",
+                "Estagiário Exemplo – termo de compromisso de estágio termina em 10/11/2026",
+            ]
+        );
     }
 }

@@ -1,14 +1,18 @@
-//! Detail panel: common details plus a collapsible section per role.
+//! Detail panel: common details plus a collapsible section per role. The
+//! enrolment number (often the CPF) stays hidden until revealed.
 
 use egui::{Align, Layout, RichText, Ui};
 
-use crate::model::{AdviseeRecord, FypRecord, PhdRecord, PlacementRecord, Settings, Student};
-use crate::ui::{advisee, fyp, icons, phd, placement, theme, widgets};
+use crate::model::{
+    AdviseeRecord, IcRecord, Level, PlacementRecord, PosRecord, Settings, Student, TccRecord, is_cpf, masked,
+};
+use crate::ui::{advisee, ic, icons, placement, pos, tcc, theme, widgets};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
-    Fyp,
-    Phd,
+    Tcc,
+    Ic,
+    Pos,
     Placement,
     Advisee,
 }
@@ -16,10 +20,11 @@ pub enum Role {
 impl Role {
     pub fn label(self) -> &'static str {
         match self {
-            Role::Fyp => "Project supervision",
-            Role::Phd => "Research supervision",
-            Role::Placement => "Placement",
-            Role::Advisee => "Studies Advisee",
+            Role::Tcc => "TCC",
+            Role::Ic => "Iniciação científica",
+            Role::Pos => "Pós-graduação",
+            Role::Placement => "Estágio supervisionado",
+            Role::Advisee => "Tutoria acadêmica",
         }
     }
 }
@@ -29,32 +34,38 @@ pub enum FormAction {
     Close,
     Delete,
     RemoveRole(Role),
-    /// Save an invite file for the meeting or visit with this UID.
+    /// Save an invite file for the meeting, visit or defence with this UID.
     Invite(String),
+    /// Show the enrolment number (asking for the password if set to).
+    Reveal,
+    /// Hide it again.
+    Hide,
 }
 
-pub fn show(ui: &mut Ui, s: &mut Student, settings: &Settings, duplicate_b: bool) -> FormAction {
+/// `revealed`: the enrolment number of this student is shown.
+pub fn show(ui: &mut Ui, s: &mut Student, settings: &Settings, duplicate: bool, revealed: bool) -> FormAction {
     let mut action = FormAction::None;
+    let hidden = settings.hide_enrollment && !revealed && !s.enrollment.trim().is_empty();
     ui.horizontal(|ui| {
         theme::avatar(ui, &s.name, 52.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(theme::serif(if s.name.is_empty() { "New student" } else { &s.name }, 24.0));
-            let mut sub = vec![];
-            if !s.b_number.is_empty() {
-                sub.push(s.b_number.as_str());
-            }
-            if !s.course.is_empty() {
-                sub.push(s.course.as_str());
-            }
+            ui.set_max_width((ui.available_width() - 30.0).max(120.0));
+            let name = if s.name.is_empty() { "Novo aluno" } else { &s.name };
+            ui.add(egui::Label::new(theme::serif(name, 24.0)).truncate());
+            let shown = if hidden { masked(&s.enrollment) } else { s.enrollment.clone() };
+            let sub: Vec<&str> = [shown.as_str(), s.course.as_str()]
+                .into_iter()
+                .filter(|t| !t.trim().is_empty())
+                .collect();
             if !sub.is_empty() {
-                ui.label(RichText::new(sub.join(" · ")).color(theme::muted(ui)));
+                ui.add(egui::Label::new(RichText::new(sub.join(" · ")).color(theme::muted(ui))).truncate());
             }
         });
         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
             if ui
                 .add(egui::Button::new(RichText::new(icons::X).size(15.0)).frame(false))
-                .on_hover_text("Close")
+                .on_hover_text("Fechar")
                 .clicked()
             {
                 action = FormAction::Close;
@@ -63,66 +74,112 @@ pub fn show(ui: &mut Ui, s: &mut Student, settings: &Settings, duplicate_b: bool
     });
     ui.horizontal_wrapped(|ui| {
         ui.add_space(60.0);
-        if let Some(f) = &s.fyp {
-            theme::chip(ui, format!("{} {}", icons::BOOK_OPEN_TEXT, settings.programme_short(&f.programme)), theme::ACCENT);
+        if let Some(f) = &s.tcc {
+            theme::chip(ui, format!("{} TCC · {}", icons::BOOK_OPEN_TEXT, settings.programme_short(&f.programme)), theme::ACCENT);
         }
-        if let Some(p) = &s.phd {
-            let ext = if p.external { " External" } else { "" };
-            theme::chip(ui, format!("{} {}{ext}", icons::GRADUATION_CAP, p.degree.label()), theme::PLUM);
+        if let Some(f) = &s.ic {
+            theme::chip(ui, format!("{} IC · {}", icons::FLASK, f.modality.short()), theme::TEAL);
+        }
+        if let Some(p) = &s.pos {
+            let ext = if p.external { " · coorientação" } else { "" };
+            theme::chip(ui, format!("{} {}{ext}", icons::GRADUATION_CAP, p.level.short()), theme::PLUM);
         }
         if s.placement.is_some() {
-            theme::chip(ui, format!("{} Placement", icons::BUILDINGS), theme::AMBER);
+            theme::chip(ui, format!("{} Estágio", icons::BUILDINGS), theme::AMBER);
         }
         if s.advisee.is_some() {
-            theme::chip(ui, format!("{} Advisee", icons::CHAT_CIRCLE_TEXT), theme::GREEN);
+            theme::chip(ui, format!("{} Tutoria", icons::CHAT_CIRCLE_TEXT), theme::GREEN);
         }
         if s.archived {
-            theme::chip(ui, format!("{} archived", icons::ARCHIVE), theme::GREY);
+            theme::chip(ui, format!("{} arquivado", icons::ARCHIVE), theme::GREY);
         }
     });
     ui.add_space(10.0);
 
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        theme::card(ui, "Details", |ui| {
+        theme::card(ui, "Dados do aluno", |ui| {
             widgets::form_grid(ui, "details-grid", |ui| {
-                ui.label("B Number");
+                ui.label("Matrícula");
                 ui.vertical(|ui| {
-                    widgets::text_field(ui, &mut s.b_number, "B00123456");
-                    if duplicate_b {
-                        ui.colored_label(theme::fg(ui, theme::AMBER), format!("{} Another student has this B number", icons::WARNING));
+                    if hidden {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(masked(&s.enrollment)).monospace());
+                            let hover = if settings.reveal_needs_password {
+                                "Mostrar a matrícula (pede a senha)"
+                            } else {
+                                "Mostrar a matrícula"
+                            };
+                            if ui.button(format!("{} Revelar", icons::EYE)).on_hover_text(hover).clicked() {
+                                action = FormAction::Reveal;
+                            }
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            let width = (ui.available_width() - 110.0).max(widgets::MIN_FIELD_WIDTH);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut s.enrollment)
+                                    .hint_text("Matrícula ou CPF")
+                                    .desired_width(width),
+                            );
+                            if settings.hide_enrollment
+                                && !s.enrollment.trim().is_empty()
+                                && ui.button(format!("{} Ocultar", icons::EYE_SLASH)).clicked()
+                            {
+                                action = FormAction::Hide;
+                            }
+                        });
+                    }
+                    if is_cpf(&s.enrollment) {
+                        ui.label(
+                            RichText::new(format!("{} É um CPF – evite compartilhar", icons::KEY))
+                                .small()
+                                .color(theme::muted(ui)),
+                        );
+                    }
+                    if duplicate {
+                        ui.colored_label(
+                            theme::fg(ui, theme::AMBER),
+                            format!("{} Outro aluno tem esta matrícula", icons::WARNING),
+                        );
                     }
                 });
                 ui.end_row();
-                ui.label("Name");
-                widgets::text_field(ui, &mut s.name, "Full name");
+                ui.label("Nome");
+                widgets::text_field(ui, &mut s.name, "Nome completo");
                 ui.end_row();
-                ui.label("Email");
-                widgets::text_field(ui, &mut s.email, "University email");
+                ui.label("E-mail");
+                widgets::text_field(ui, &mut s.email, "E-mail institucional");
                 ui.end_row();
-                ui.label("Course");
-                widgets::text_field(ui, &mut s.course, "e.g. BEng Mechanical Engineering");
+                ui.label("Curso");
+                widgets::text_field(ui, &mut s.course, "Ex.: Engenharia Mecânica");
                 ui.end_row();
-                ui.label("Archived");
-                ui.checkbox(&mut s.archived, "Hide from lists and dashboard");
+                ui.label("Arquivado");
+                ui.checkbox(&mut s.archived, "Ocultar das listas e do painel");
                 ui.end_row();
             });
-            widgets::notes(ui, &mut s.notes, "General notes…");
+            widgets::notes(ui, &mut s.notes, "Anotações gerais…");
         });
 
-        if s.fyp.is_none() || s.phd.is_none() || s.placement.is_none() || s.advisee.is_none() {
+        if s.tcc.is_none() || s.ic.is_none() || s.pos.is_none() || s.placement.is_none() || s.advisee.is_none() {
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Add role").color(theme::muted(ui)));
-                if s.fyp.is_none() && ui.button(format!("{} Project supervision", icons::PLUS)).clicked() {
-                    s.fyp = Some(FypRecord::default());
+                ui.label(RichText::new("Adicionar vínculo").color(theme::muted(ui)));
+                if s.tcc.is_none() && ui.button(format!("{} TCC", icons::PLUS)).clicked() {
+                    s.tcc = Some(TccRecord {
+                        programme: settings.programmes.first().map(|p| p.id.clone()).unwrap_or_default(),
+                        ..Default::default()
+                    });
                 }
-                if s.phd.is_none() && ui.button(format!("{} Research (PhD / MSc)", icons::PLUS)).clicked() {
-                    s.phd = Some(PhdRecord::default());
+                if s.ic.is_none() && ui.button(format!("{} Iniciação científica", icons::PLUS)).clicked() {
+                    s.ic = Some(IcRecord::new());
                 }
-                if s.placement.is_none() && ui.button(format!("{} Placement", icons::PLUS)).clicked() {
+                if s.pos.is_none() && ui.button(format!("{} Pós-graduação", icons::PLUS)).clicked() {
+                    s.pos = Some(PosRecord::new(Level::MestradoAcademico));
+                }
+                if s.placement.is_none() && ui.button(format!("{} Estágio", icons::PLUS)).clicked() {
                     s.placement = Some(PlacementRecord::default());
                 }
-                if s.advisee.is_none() && ui.button(format!("{} Studies Advisee", icons::PLUS)).clicked() {
+                if s.advisee.is_none() && ui.button(format!("{} Tutoria", icons::PLUS)).clicked() {
                     s.advisee = Some(AdviseeRecord::default());
                 }
             });
@@ -131,16 +188,23 @@ pub fn show(ui: &mut Ui, s: &mut Student, settings: &Settings, duplicate_b: bool
         // At most one invite button is clicked per frame.
         let mut invite = None;
         let id = s.id;
-        if let Some(f) = &mut s.fyp {
-            role_section(ui, Role::Fyp, &mut action, |ui| {
-                if let Some(uid) = fyp::show(ui, f, settings) {
+        if let Some(f) = &mut s.tcc {
+            role_section(ui, Role::Tcc, &mut action, |ui| {
+                if let Some(uid) = tcc::show(ui, f, settings, id) {
                     invite = Some(uid);
                 }
             });
         }
-        if let Some(p) = &mut s.phd {
-            role_section(ui, Role::Phd, &mut action, |ui| {
-                if let Some(uid) = phd::show(ui, p, settings, id) {
+        if let Some(f) = &mut s.ic {
+            role_section(ui, Role::Ic, &mut action, |ui| {
+                if let Some(uid) = ic::show(ui, f, settings) {
+                    invite = Some(uid);
+                }
+            });
+        }
+        if let Some(p) = &mut s.pos {
+            role_section(ui, Role::Pos, &mut action, |ui| {
+                if let Some(uid) = pos::show(ui, p, settings, id) {
                     invite = Some(uid);
                 }
             });
@@ -165,7 +229,7 @@ pub fn show(ui: &mut Ui, s: &mut Student, settings: &Settings, duplicate_b: bool
 
         ui.add_space(16.0);
         if ui
-            .button(RichText::new(format!("{} Delete student…", icons::TRASH)).color(theme::fg(ui, theme::RED)))
+            .button(RichText::new(format!("{} Excluir aluno…", icons::TRASH)).color(theme::fg(ui, theme::RED)))
             .clicked()
         {
             action = FormAction::Delete;
@@ -177,8 +241,9 @@ pub fn show(ui: &mut Ui, s: &mut Student, settings: &Settings, duplicate_b: bool
 
 fn role_section(ui: &mut Ui, role: Role, action: &mut FormAction, add: impl FnOnce(&mut Ui)) {
     let (icon, color) = match role {
-        Role::Fyp => (icons::BOOK_OPEN_TEXT, theme::ACCENT),
-        Role::Phd => (icons::GRADUATION_CAP, theme::PLUM),
+        Role::Tcc => (icons::BOOK_OPEN_TEXT, theme::ACCENT),
+        Role::Ic => (icons::FLASK, theme::TEAL),
+        Role::Pos => (icons::GRADUATION_CAP, theme::PLUM),
         Role::Placement => (icons::BUILDINGS, theme::AMBER),
         Role::Advisee => (icons::CHAT_CIRCLE_TEXT, theme::GREEN),
     };
@@ -194,7 +259,7 @@ fn role_section(ui: &mut Ui, role: Role, action: &mut FormAction, add: impl FnOn
                 add(ui);
                 ui.add_space(4.0);
                 if ui
-                    .small_button(RichText::new(format!("Remove {} record…", role.label())).color(theme::muted(ui)))
+                    .small_button(RichText::new(format!("Remover registro de {}…", role.label())).color(theme::muted(ui)))
                     .clicked()
                 {
                     *action = FormAction::RemoveRole(role);

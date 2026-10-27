@@ -1,4 +1,4 @@
-//! Studies advisee section: contact / reply / meetings for each semester.
+//! Tutoria acadêmica section: contact / reply / meetings for each semester.
 
 use egui::Ui;
 
@@ -7,9 +7,9 @@ use crate::ui::{theme, widgets};
 
 /// Returns the UID of a meeting to save an invite for.
 pub fn show(ui: &mut Ui, a: &mut AdviseeRecord, settings: &Settings) -> Option<String> {
-    let s1 = semester(ui, "Semester 1", &mut a.s1, settings);
+    let s1 = semester(ui, "1º semestre", &mut a.s1, settings);
     ui.add_space(6.0);
-    let s2 = semester(ui, "Semester 2", &mut a.s2, settings);
+    let s2 = semester(ui, "2º semestre", &mut a.s2, settings);
     s1.or(s2)
 }
 
@@ -27,16 +27,16 @@ fn semester(
                 ui.set_width(ui.available_width());
                 ui.label(theme::semibold(title).size(15.0));
                 widgets::form_grid(ui, "sem-grid", |ui| {
-                    ui.label("I contacted them");
+                    ui.label("Entrei em contato");
                     widgets::opt_date(ui, "contacted", &mut c.contacted_on);
                     ui.end_row();
 
-                    ui.label("Their reply");
+                    ui.label("Resposta");
                     widgets::reply_status(ui, &mut c.reply);
                     ui.end_row();
 
                     if c.reply == ReplyStatus::Replied {
-                        ui.label("Replied on");
+                        ui.label("Respondeu em");
                         widgets::opt_date(ui, "replied", &mut c.replied_on);
                         ui.end_row();
                     }
@@ -45,7 +45,7 @@ fn semester(
                     ui,
                     "meetings",
                     &mut c.meetings,
-                    Some("Semester meeting"),
+                    Some("Reunião do semestre"),
                     settings,
                 )
             })

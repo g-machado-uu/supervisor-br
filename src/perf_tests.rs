@@ -14,7 +14,7 @@ fn d(y: i32, m: u32, day: u32) -> NaiveDate {
 }
 
 fn notes(n: usize) -> String {
-    "Discussed progress on the literature review and next steps. ".repeat(n)
+    "Discutimos o andamento da revisão bibliográfica e os próximos passos. ".repeat(n)
 }
 
 /// A repeating meeting with `held` weeks already marked, each with notes.
@@ -30,28 +30,28 @@ fn repeating(start: NaiveDate, every: u8, until: Option<NaiveDate>, held: usize)
     Meeting {
         date: Some(start),
         time: NaiveTime::from_hms_opt(14, 0, 0),
-        location: "MG.201".into(),
+        location: "Sala 201".into(),
         repeat: Some(Repeat { every_weeks: every, until, exceptions }),
         notes: notes(1),
         ..Default::default()
     }
 }
 
-/// One academic year: 40 project, 6 PhD, 15 advisee and 10 placement students.
+/// One academic year: 40 TCC, 10 IC, 6 postgraduate, 15 tutoria and 10 estágio students.
 fn year(y: i32, archived: bool) -> Vec<Student> {
-    let (s1, s2) = (d(y, 9, 21), d(y + 1, 1, 26));
+    let (s1, s2) = (d(y, 3, 2), d(y, 8, 3));
     let held = |current, past| if archived { past } else { current };
     let mut out = Vec::new();
     for i in 0..40 {
         out.push(Student {
-            name: format!("Student {y}-{i}"),
-            b_number: format!("B00{y}{i:03}"),
-            email: format!("s{i}@example.ac.uk"),
-            course: "BEng Computer Engineering".into(),
+            name: format!("Aluno {y}-{i}"),
+            enrollment: format!("{y}{i:06}"),
+            email: format!("a{i}@exemplo.edu.br"),
+            course: "Engenharia de Computação".into(),
             archived,
             notes: notes(3),
-            fyp: Some(FypRecord {
-                programme: if i % 3 == 0 { "MSc".into() } else { "BEng".into() },
+            tcc: Some(TccRecord {
+                programme: "graduacao".into(),
                 initial_contact: true,
                 meetings: vec![repeating(s1, 1, None, held(5, 12)), repeating(s2, 1, None, held(0, 12))],
                 ..Default::default()
@@ -60,23 +60,32 @@ fn year(y: i32, archived: bool) -> Vec<Student> {
         });
     }
     for i in 0..6 {
-        let mut phd = PhdRecord::default();
-        phd.meetings = vec![repeating(s1, 2, Some(d(y + 1, 8, 31)), held(3, 24))];
-        out.push(Student { name: format!("PhD {y}-{i}"), archived, notes: notes(5), phd: Some(phd), ..Default::default() });
-    }
-    for i in 0..15 {
-        out.push(Student { name: format!("Advisee {y}-{i}"), archived, advisee: Some(AdviseeRecord::default()), ..Default::default() });
+        let mut pos = PosRecord::new(Level::DoutoradoAcademico);
+        pos.start = Some(s1);
+        pos.suggest(&LevelRule::default_for(pos.level));
+        pos.meetings = vec![repeating(s1, 2, Some(d(y + 1, 8, 31)), held(3, 24))];
+        out.push(Student { name: format!("Pós {y}-{i}"), archived, notes: notes(5), pos: Some(pos), ..Default::default() });
     }
     for i in 0..10 {
-        out.push(Student { name: format!("Placement {y}-{i}"), archived, placement: Some(PlacementRecord::default()), ..Default::default() });
+        let mut ic = IcRecord::new();
+        ic.grant.start = Some(s2);
+        ic.suggest();
+        ic.meetings = vec![repeating(s2, 2, None, held(2, 8))];
+        out.push(Student { name: format!("IC {y}-{i}"), archived, ic: Some(ic), ..Default::default() });
+    }
+    for i in 0..15 {
+        out.push(Student { name: format!("Tutoria {y}-{i}"), archived, advisee: Some(AdviseeRecord::default()), ..Default::default() });
+    }
+    for i in 0..10 {
+        out.push(Student { name: format!("Estágio {y}-{i}"), archived, placement: Some(PlacementRecord::default()), ..Default::default() });
     }
     out
 }
 
 fn dataset(archived_years: i32) -> Database {
     let mut db = Database::default();
-    db.settings.sem1_start = Some(d(2026, 9, 21));
-    db.settings.sem2_start = Some(d(2027, 1, 26));
+    db.settings.sem1_start = Some(d(2026, 3, 2));
+    db.settings.sem2_start = Some(d(2026, 8, 3));
     for y in (2026 - archived_years)..2026 {
         db.students.extend(year(y, true));
     }

@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Install Supervisor for the current user on Linux (no root needed).
+# Instala o Supervisor BR para o usuário atual no Linux (sem root).
 #
-#   ./install.sh                      build, install, keep the current data file
-#   ./install.sh --path=~/Documents/  also use ~/Documents/data.svt as the data file
-#   ./install.sh --path=~/sync/x.svt  ...or a specific file name
-#   ./install.sh --uninstall          remove the binary, launcher and icon (keeps data)
+#   ./install.sh                       compila, instala e mantém o arquivo de dados atual
+#   ./install.sh --path=~/Documentos/  usa também ~/Documentos/data.svt como arquivo de dados
+#   ./install.sh --path=~/sync/x.svt   ...ou um nome de arquivo específico
+#   ./install.sh --uninstall           remove o binário, o atalho e o ícone (mantém os dados)
 #
-# Installs:
-#   ~/.local/bin/supervisor
-#   ~/.local/share/applications/supervisor.desktop   (Rofi drun, app menus)
-#   ~/.local/share/icons/hicolor/*/apps/supervisor.{svg,png}
+# Instala:
+#   ~/.local/bin/supervisor-br
+#   ~/.local/share/applications/supervisor-br.desktop   (Rofi drun, menus de apps)
+#   ~/.local/share/icons/hicolor/*/apps/supervisor-br.{svg,png}
 
 set -euo pipefail
 
-APP=supervisor
+APP=supervisor-br
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 APPS_DIR="$DATA_HOME/applications"
 ICON_DIR="$DATA_HOME/icons/hicolor"
-# Must match storage.rs (directories::ProjectDirs "Supervisor" on Linux).
+# Must match storage.rs (directories::ProjectDirs "Supervisor-BR" on Linux: "supervisor-br").
 DEFAULT_DATA="$DATA_HOME/$APP/data.svt"
 LAST_FILE="$CONFIG_HOME/$APP/last_file.txt"
 KEY_FILE="$CONFIG_HOME/$APP/key.bin"
@@ -36,11 +36,11 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --path=*) data_path="${1#--path=}" ;;
         --path)
-            [[ $# -ge 2 ]] || { echo "error: --path needs a value" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "erro: --path precisa de um valor" >&2; exit 1; }
             data_path="$2"; shift ;;
         --uninstall) uninstall=1 ;;
         -h|--help) usage; exit 0 ;;
-        *) echo "error: unknown option '$1'" >&2; usage >&2; exit 1 ;;
+        *) echo "erro: opção desconhecida '$1'" >&2; usage >&2; exit 1 ;;
     esac
     shift
 done
@@ -54,7 +54,7 @@ if [[ $uninstall -eq 1 ]]; then
     rm -f "$BIN_DIR/$APP" "$APPS_DIR/$APP.desktop"
     rm -f "$ICON_DIR"/scalable/apps/$APP.svg "$ICON_DIR"/*/apps/$APP.png
     refresh_caches
-    echo "Removed Supervisor. Your data file, key file (if any) and $LAST_FILE were left in place."
+    echo "Supervisor BR removido. O arquivo de dados, o arquivo-chave (se houver) e $LAST_FILE foram mantidos."
     exit 0
 fi
 
@@ -80,15 +80,15 @@ fi
 # --- Build -----------------------------------------------------------------
 binary="$SRC_DIR/target/release/$APP"
 if command -v cargo >/dev/null; then
-    echo "==> Building release binary"
+    echo "==> Compilando o binário de release"
     cargo build --release --manifest-path "$SRC_DIR/Cargo.toml"
 elif [[ ! -x "$binary" ]]; then
-    echo "error: cargo not found and no prebuilt $binary" >&2
+    echo "erro: cargo não encontrado e não há $binary pré-compilado" >&2
     exit 1
 fi
 
 # --- Install ---------------------------------------------------------------
-echo "==> Installing"
+echo "==> Instalando"
 install -Dm755 "$binary" "$BIN_DIR/$APP"
 
 install -Dm644 "$SRC_DIR/packaging/$APP.svg" "$ICON_DIR/scalable/apps/$APP.svg"
@@ -118,7 +118,7 @@ sed -e "s|^Exec=.*|Exec=$BIN_DIR/$APP|" -e "s|^Icon=.*|Icon=$APP|" \
 chmod 644 "$APPS_DIR/$APP.desktop"
 
 # The app opens the last-used file, so pointing that at the chosen path makes
-# both the launcher and a bare `supervisor` in a terminal use it.
+# both the launcher and a bare `supervisor-br` in a terminal use it.
 # Owner-only: this folder also holds the key file, if you add one.
 mkdir -p -m 700 "$(dirname -- "$LAST_FILE")"
 printf '%s' "$data_path" > "$LAST_FILE"
@@ -128,31 +128,31 @@ refresh_caches
 # --- Report ----------------------------------------------------------------
 cat <<EOF
 
-Supervisor installed.
+Supervisor BR instalado.
 
-  Binary:    $BIN_DIR/$APP
-  Launcher:  $APPS_DIR/$APP.desktop
-  Icon:      $ICON_DIR/scalable/apps/$APP.svg
-  Data file: $data_path
+  Binário:   $BIN_DIR/$APP
+  Atalho:    $APPS_DIR/$APP.desktop
+  Ícone:     $ICON_DIR/scalable/apps/$APP.svg
+  Dados:     $data_path
 EOF
 if [[ -e "$data_path" ]]; then
-    echo "             (existing file – unlock it with your password)"
+    echo "             (arquivo existente – desbloqueie com a sua senha)"
 else
-    echo "             (doesn't exist yet – set a password on first launch to create it)"
+    echo "             (ainda não existe – crie uma senha na primeira execução)"
 fi
-echo "             Backup: $data_path.bak (kept after each save)"
+echo "             Backup: $data_path.bak (mantido a cada salvamento)"
 if [[ -e "$KEY_FILE" ]]; then
-    echo "  Key file:  $KEY_FILE"
+    echo "  Arquivo-chave: $KEY_FILE"
 fi
 
 case ":$PATH:" in
     *":$BIN_DIR:"*)
         echo
-        echo "$BIN_DIR is already on your PATH – run 'supervisor' from a terminal." ;;
+        echo "$BIN_DIR já está no seu PATH – rode 'supervisor-br' num terminal." ;;
     *)
         cat <<EOF
 
-$BIN_DIR is not on your PATH. Add it for your shell, then open a new terminal:
+$BIN_DIR não está no seu PATH. Adicione-o no seu shell e abra um novo terminal:
 
   bash:  echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> ~/.bashrc
   zsh:   echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> ~/.zshrc
@@ -163,8 +163,8 @@ esac
 
 cat <<EOF
 
-Launching:
-  Rofi:      rofi -show drun -show-icons   (search "Supervisor")
+Para abrir:
+  Rofi:      rofi -show drun -show-icons   (busque "Supervisor BR")
   Hyprland:  bind = \$mainMod, S, exec, $BIN_DIR/$APP
-  Window class (for Hyprland windowrules): supervisor
+  Classe da janela (windowrules do Hyprland): supervisor-br
 EOF

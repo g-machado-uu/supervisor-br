@@ -1,5 +1,5 @@
 //! Home screen: counts, upcoming items, things needing attention, and a side
-//! column with the month, the teaching week and coursework progress.
+//! column with the month, the teaching week, TCC hand-ins and grants.
 
 use std::collections::BTreeMap;
 
@@ -7,7 +7,8 @@ use chrono::{Datelike, Duration, Local, Months, NaiveDate, Timelike};
 use egui::{Align2, Color32, CornerRadius, FontId, RichText, Sense, Ui};
 use uuid::Uuid;
 
-use crate::model::{self, Attention, Database, Event, EventKind, ResearchGroup, Severity};
+use crate::model::{self, Attention, Database, Event, EventKind, PosGroup, Severity};
+use crate::pt;
 use crate::ui::student_list::Category;
 use crate::ui::{icons, theme, widgets};
 
@@ -29,23 +30,23 @@ pub fn show(ui: &mut Ui, db: &Database, events: &[Event], attention: &[Attention
 
     let first_name = db.settings.my_name.split_whitespace().next().unwrap_or("");
     let greeting = match Local::now().hour() {
-        5..=11 => "Good morning",
-        12..=17 => "Good afternoon",
-        _ => "Good evening",
+        5..=11 => "Bom dia",
+        12..=17 => "Boa tarde",
+        _ => "Boa noite",
     };
     let title = if first_name.is_empty() {
         greeting.to_string()
     } else {
         format!("{greeting}, {first_name}")
     };
-    let mut subtitle = format!("{} · {}", today.format("%A %d %B %Y"), db.settings.academic_year);
+    let mut subtitle = format!("{} · Ano letivo {}", pt::long(today), db.settings.academic_year);
     if let Some((sem, week)) = db.settings.teaching_week(today) {
-        subtitle.push_str(&format!(" · {}, week {week}", sem.label()));
+        subtitle.push_str(&format!(" · {}, semana {week}", sem.label()));
     }
     theme::page_header(ui, &title, &subtitle, |ui| {
         if ui
-            .add(theme::primary_button(format!("{}  Export calendar", icons::EXPORT)))
-            .on_hover_text("Meetings, visits and deadlines as an .ics file. Note: the exported file is not encrypted.")
+            .add(theme::primary_button(format!("{}  Exportar agenda", icons::EXPORT)))
+            .on_hover_text("Reuniões, visitas e prazos em um arquivo .ics. Atenção: o arquivo exportado não é criptografado.")
             .clicked()
         {
             action = DashAction::ExportIcs;
@@ -93,19 +94,22 @@ fn side_column(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, a
     mini_month(ui, events, today, action);
     teaching(ui, db, today);
     coursework(ui, db, today);
+    grants(ui, db, today);
 }
 
 /// One tile per list, as many per row as fit, stretched to fill the row.
 fn tiles(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, action: &mut DashAction) {
-    let lists = db.settings.programme_lists().into_iter().map(Category::Projects);
-    // PhD always; the other research lists once they have students.
-    let research = ResearchGroup::ALL
+    let lists = db.settings.programme_lists().into_iter().map(Category::Tcc);
+    // TCC, IC, mestrado and doutorado always; the other lists once they have students.
+    let pos = PosGroup::ALL
         .into_iter()
-        .map(Category::Research)
-        .filter(|c| *c == Category::Research(ResearchGroup::Phd) || c.count(db) > 0);
+        .filter(|g| g.always_shown() || Category::Pos(*g).count(db) > 0)
+        .map(Category::Pos);
+    let others = [Category::Placement, Category::Advisee].into_iter().filter(|c| c.count(db) > 0);
     let tiles: Vec<Category> = lists
-        .chain(research)
-        .chain([Category::Placement, Category::Advisee])
+        .chain([Category::Ic])
+        .chain(pos)
+        .chain(others)
         .collect();
     let width = ui.available_width();
     let fit = ((width + GAP) / (190.0 + GAP)).floor().clamp(1.0, tiles.len() as f32) as usize;
@@ -121,11 +125,13 @@ fn tiles(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, action:
             ui.spacing_mut().item_spacing.x = GAP;
             for cat in row {
                 let (icon, color, caption) = match cat {
-                    Category::Projects(list) => (icons::BOOK_OPEN_TEXT, theme::ACCENT, format!("{list} projects")),
-                    Category::Research(group) => (icons::GRADUATION_CAP, theme::PLUM, format!("{} students", group.label())),
-                    Category::Placement => (icons::BUILDINGS, theme::AMBER, "Placements".into()),
-                    Category::Advisee => (icons::CHAT_CIRCLE_TEXT, theme::GREEN, "Studies advisees".into()),
-                    Category::All => (icons::USERS_THREE, theme::GREY, "All students".into()),
+                    Category::Tcc(list) if list == "TCC" => (icons::BOOK_OPEN_TEXT, theme::ACCENT, "Alunos de TCC".into()),
+                    Category::Tcc(list) => (icons::BOOK_OPEN_TEXT, theme::ACCENT, format!("TCC – {list}")),
+                    Category::Ic => (icons::FLASK, theme::TEAL, "Iniciação científica".into()),
+                    Category::Pos(group) => (icons::GRADUATION_CAP, theme::PLUM, group.label().to_string()),
+                    Category::Placement => (icons::BUILDINGS, theme::AMBER, "Estágio".into()),
+                    Category::Advisee => (icons::CHAT_CIRCLE_TEXT, theme::GREEN, "Tutoria".into()),
+                    Category::All => (icons::USERS_THREE, theme::GREY, "Todos os alunos".into()),
                 };
                 let this_week = events
                     .iter()
@@ -139,16 +145,17 @@ fn tiles(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, action:
                                     && match cat {
                                         Category::Placement => e.kind == EventKind::Visit,
                                         Category::Advisee => e.kind == EventKind::AdviseeMeeting,
-                                        Category::Research(_) => e.kind == EventKind::PhdMeeting,
-                                        _ => e.kind == EventKind::FypMeeting,
+                                        Category::Pos(_) => e.kind == EventKind::PosMeeting,
+                                        Category::Ic => e.kind == EventKind::IcMeeting,
+                                        _ => e.kind == EventKind::TccMeeting,
                                     }
                             })
                     })
                     .count();
                 let note = match this_week {
-                    0 => "nothing in the next 7 days".to_string(),
-                    1 => "1 in the next 7 days".to_string(),
-                    n => format!("{n} in the next 7 days"),
+                    0 => "nada nos próximos 7 dias".to_string(),
+                    1 => "1 nos próximos 7 dias".to_string(),
+                    n => format!("{n} nos próximos 7 dias"),
                 };
                 let resp = theme::card_frame(ui)
                     .inner_margin(egui::Margin::symmetric(16, 14))
@@ -195,7 +202,7 @@ fn date_badge(ui: &mut Ui, date: NaiveDate, color: Color32) {
     painter.text(
         rect.center_top() + egui::vec2(0.0, 10.0),
         Align2::CENTER_CENTER,
-        date.format("%a").to_string().to_uppercase(),
+        pt::weekday_short(date).to_uppercase(),
         FontId::proportional(10.0),
         c,
     );
@@ -209,7 +216,7 @@ fn date_badge(ui: &mut Ui, date: NaiveDate, color: Color32) {
     painter.text(
         rect.center_bottom() - egui::vec2(0.0, 10.0),
         Align2::CENTER_CENTER,
-        date.format("%b").to_string().to_uppercase(),
+        pt::month_short(date).to_uppercase(),
         FontId::proportional(10.0),
         c,
     );
@@ -218,9 +225,9 @@ fn date_badge(ui: &mut Ui, date: NaiveDate, color: Color32) {
 fn upcoming(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, action: &mut DashAction) {
     let days = db.settings.upcoming_days;
     let items = model::upcoming(events, today, days);
-    theme::card(ui, &format!("Upcoming · next {days} days"), |ui| {
+    theme::card(ui, &format!("Próximos {days} dias"), |ui| {
         if items.is_empty() {
-            empty(ui, icons::CALENDAR_CHECK, "Nothing scheduled.");
+            empty(ui, icons::CALENDAR_CHECK, "Nada agendado.");
         }
         for (i, e) in items.iter().enumerate() {
             if i > 0 {
@@ -240,7 +247,7 @@ fn upcoming(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, acti
                             let muted = theme::muted(ui);
                             let when = match e.time {
                                 Some(t) => format!("{} {}", icons::CLOCK, t.format("%H:%M")),
-                                None => format!("{} all day", icons::CLOCK),
+                                None => format!("{} dia todo", icons::CLOCK),
                             };
                             ui.label(RichText::new(when).small().color(muted));
                             ui.label(RichText::new(format!("{icon} {}", kind_name(e.kind))).small().color(theme::fg(ui, color)));
@@ -255,7 +262,7 @@ fn upcoming(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, acti
                 .response
                 .interact(Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Open student");
+                .on_hover_text("Abrir aluno");
             if row.clicked() {
                 *action = DashAction::Open(e.student_id);
             }
@@ -265,12 +272,13 @@ fn upcoming(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, acti
 
 fn kind_name(kind: EventKind) -> &'static str {
     match kind {
-        EventKind::FypMeeting => "Project meeting",
-        EventKind::Visit => "Placement visit",
-        EventKind::AdviseeMeeting => "Advisee meeting",
-        EventKind::PhdMeeting => "Research",
-        EventKind::Deadline => "Deadline",
-        EventKind::Reminder => "Reminder",
+        EventKind::TccMeeting => "TCC",
+        EventKind::IcMeeting => "Iniciação científica",
+        EventKind::Visit => "Visita de estágio",
+        EventKind::AdviseeMeeting => "Tutoria",
+        EventKind::PosMeeting => "Pós-graduação",
+        EventKind::Deadline => "Prazo",
+        EventKind::Reminder => "Lembrete",
     }
 }
 
@@ -284,19 +292,19 @@ fn empty(ui: &mut Ui, icon: &str, text: &str) {
 }
 
 fn needs_attention(ui: &mut Ui, items: &[Attention], action: &mut DashAction) {
-    theme::card(ui, "Needs attention", |ui| {
+    theme::card(ui, "Precisa de atenção", |ui| {
         if items.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(8.0);
                 ui.label(RichText::new(icons::CHECK_CIRCLE).size(26.0).color(theme::fg(ui, theme::GREEN)));
-                ui.label(RichText::new("All clear").color(theme::fg(ui, theme::GREEN)));
+                ui.label(RichText::new("Tudo em dia").color(theme::fg(ui, theme::GREEN)));
                 ui.add_space(8.0);
             });
         }
         for a in items {
             let (icon, color, tag) = match a.severity {
-                Severity::Overdue => (icons::WARNING_CIRCLE, theme::RED, "overdue"),
-                Severity::Pending => (icons::HOURGLASS, theme::AMBER, "pending"),
+                Severity::Overdue => (icons::WARNING_CIRCLE, theme::RED, "atrasado"),
+                Severity::Pending => (icons::HOURGLASS, theme::AMBER, "pendente"),
             };
             let row = egui::Frame::new()
                 .fill(ui.visuals().faint_bg_color)
@@ -337,11 +345,11 @@ fn mini_month(ui: &mut Ui, events: &[Event], today: NaiveDate, action: &mut Dash
     }
     theme::card(ui, "", |ui| {
         ui.horizontal(|ui| {
-            ui.label(theme::serif(month.format("%B %Y").to_string(), 20.0));
+            ui.label(theme::serif(pt::month_year(month), 20.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(egui::Button::new(RichText::new(icons::ARROW_RIGHT).size(15.0)).frame(false))
-                    .on_hover_text("Open in the calendar")
+                    .on_hover_text("Abrir na agenda")
                     .clicked()
                 {
                     *action = DashAction::Month(month);
@@ -353,7 +361,7 @@ fn mini_month(ui: &mut Ui, events: &[Event], today: NaiveDate, action: &mut Dash
         let muted = theme::muted(ui);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for d in ["M", "T", "W", "T", "F", "S", "S"] {
+            for d in pt::WEEKDAY_INITIALS {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(cell, 18.0), Sense::hover());
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, d, FontId::proportional(11.0), muted);
             }
@@ -405,12 +413,13 @@ fn mini_month(ui: &mut Ui, events: &[Event], today: NaiveDate, action: &mut Dash
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
             for (kind, label) in [
-                (EventKind::FypMeeting, "Project"),
-                (EventKind::Visit, "Visit"),
-                (EventKind::AdviseeMeeting, "Advisee"),
-                (EventKind::PhdMeeting, "Research"),
-                (EventKind::Deadline, "Deadline"),
-                (EventKind::Reminder, "Reminder"),
+                (EventKind::TccMeeting, "TCC"),
+                (EventKind::IcMeeting, "IC"),
+                (EventKind::PosMeeting, "Pós"),
+                (EventKind::Visit, "Estágio"),
+                (EventKind::AdviseeMeeting, "Tutoria"),
+                (EventKind::Deadline, "Prazo"),
+                (EventKind::Reminder, "Lembrete"),
             ] {
                 let color = theme::fg(ui, theme::kind_style(kind).1);
                 // Keep each dot with its name when the legend wraps.
@@ -423,25 +432,25 @@ fn mini_month(ui: &mut Ui, events: &[Event], today: NaiveDate, action: &mut Dash
 /// Where we are in the teaching semester.
 fn teaching(ui: &mut Ui, db: &Database, today: NaiveDate) {
     let s = &db.settings;
-    theme::card(ui, "Teaching", |ui| {
+    theme::card(ui, "Semestre letivo", |ui| {
         let sem = s.semester_of(today);
         let (Some(start), Some(end)) = (s.semester_start(sem), s.teaching_end(sem)) else {
-            ui.label(RichText::new("Set the semester dates in Settings to see the teaching weeks.").color(theme::muted(ui)));
+            ui.add(egui::Label::new(RichText::new("Defina as datas do semestre em Configurações para ver as semanas letivas.").color(theme::muted(ui))).wrap_mode(egui::TextWrapMode::Wrap));
             return;
         };
         let total = ((end - start).num_days() / 7 + 1).max(1);
         let label = sem.label();
         let (headline, fraction, note) = if today < start {
             let days = (start - today).num_days();
-            (format!("{label} starts soon"), 0.0, format!("Week 1 begins {} · in {days} days", start.format("%a %d %b")))
+            (format!("O {label} começa em breve"), 0.0, format!("A semana 1 começa {} · em {days} dias", pt::weekday_day_month(start)))
         } else if today > end {
-            (format!("{label} teaching is over"), 1.0, format!("Teaching ended {}", end.format("%a %d %b")))
+            (format!("As aulas do {label} terminaram"), 1.0, format!("Aulas encerradas em {}", pt::weekday_day_month(end)))
         } else {
             let week = (today - start).num_days() / 7 + 1;
             (
-                format!("Week {week} of {total}"),
+                format!("Semana {week} de {total}"),
                 week as f32 / total as f32,
-                format!("{label} · teaching ends {}", end.format("%a %d %b")),
+                format!("{label} · aulas até {}", pt::weekday_day_month(end)),
             )
         };
         ui.label(theme::semibold(headline).size(18.0));
@@ -452,10 +461,10 @@ fn teaching(ui: &mut Ui, db: &Database, today: NaiveDate) {
     });
 }
 
-/// Submitted, upcoming and overdue coursework across current project students.
+/// Handed in, upcoming and overdue TCC items across current students.
 fn coursework(ui: &mut Ui, db: &Database, today: NaiveDate) {
     let (mut done, mut due, mut overdue) = (0usize, 0usize, 0usize);
-    for f in db.students.iter().filter(|s| !s.archived).filter_map(|s| s.fyp.as_ref()) {
+    for f in db.students.iter().filter(|s| !s.archived).filter_map(|s| s.tcc.as_ref()) {
         for module in db.settings.modules_for(&f.programme) {
             for cw in &module.courseworks {
                 let status = f.coursework.get(&cw.id);
@@ -469,10 +478,10 @@ fn coursework(ui: &mut Ui, db: &Database, today: NaiveDate) {
             }
         }
     }
-    theme::card(ui, "Coursework", |ui| {
+    theme::card(ui, "Entregas de TCC", |ui| {
         let total = done + due + overdue;
         if total == 0 {
-            ui.label(RichText::new("No coursework for current project students.").color(theme::muted(ui)));
+            ui.add(egui::Label::new(RichText::new("Nenhuma entrega com prazo para os alunos de TCC.").color(theme::muted(ui))).wrap_mode(egui::TextWrapMode::Wrap));
             return;
         }
         ui.horizontal(|ui| {
@@ -482,15 +491,15 @@ fn coursework(ui: &mut Ui, db: &Database, today: NaiveDate) {
                 104.0,
                 &[(done as f32, theme::GREEN), (due as f32, theme::ACCENT), (overdue as f32, theme::RED)],
                 &pct,
-                "submitted",
+                "entregues",
             );
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 ui.add_space(10.0);
                 for (n, label, color) in [
-                    (done, "Submitted", theme::GREEN),
-                    (due, "Still to come", theme::ACCENT),
-                    (overdue, "Overdue", theme::RED),
+                    (done, "Entregues", theme::GREEN),
+                    (due, "A entregar", theme::ACCENT),
+                    (overdue, "Atrasadas", theme::RED),
                 ] {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("●").color(theme::fg(ui, color)));
@@ -499,6 +508,52 @@ fn coursework(ui: &mut Ui, db: &Database, today: NaiveDate) {
                     });
                 }
             });
+        });
+    });
+}
+
+/// Students with a grant, by agency, and how many grants end within 90 days.
+fn grants(ui: &mut Ui, db: &Database, today: NaiveDate) {
+    let mut by_agency: BTreeMap<String, usize> = BTreeMap::new();
+    let mut ending = 0;
+    let active_pos = |s: &&crate::model::Student| s.pos.as_ref().is_none_or(|p| p.status.active());
+    for s in db.students.iter().filter(|s| !s.archived).filter(active_pos) {
+        let grants = s.ic.iter().map(|i| &i.grant).chain(s.pos.iter().map(|p| &p.grant));
+        for g in grants.filter(|g| g.active() && g.end().is_none_or(|end| end >= today)) {
+            *by_agency.entry(g.agency_label()).or_default() += 1;
+            if g.end().is_some_and(|end| (end - today).num_days() <= 90) {
+                ending += 1;
+            }
+        }
+    }
+    theme::card(ui, "Bolsas", |ui| {
+        if by_agency.is_empty() {
+            ui.add(
+                egui::Label::new(RichText::new("Nenhum bolsista ativo.").color(theme::muted(ui)))
+                    .wrap_mode(egui::TextWrapMode::Wrap),
+            );
+            return;
+        }
+        let total: usize = by_agency.values().sum();
+        ui.horizontal(|ui| {
+            theme::icon_badge(ui, icons::COINS, theme::GREEN, 36.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(theme::semibold(pt::count(total, "bolsista", "bolsistas")).size(17.0));
+                let note = match ending {
+                    0 => "nenhuma bolsa termina nos próximos 90 dias".to_string(),
+                    1 => "1 bolsa termina nos próximos 90 dias".to_string(),
+                    n => format!("{n} bolsas terminam nos próximos 90 dias"),
+                };
+                let color = if ending > 0 { theme::fg(ui, theme::AMBER) } else { theme::muted(ui) };
+                ui.add(egui::Label::new(RichText::new(note).small().color(color)).wrap_mode(egui::TextWrapMode::Wrap));
+            });
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            for (agency, n) in &by_agency {
+                theme::chip(ui, format!("{agency} · {n}"), theme::GREEN);
+            }
         });
     });
 }

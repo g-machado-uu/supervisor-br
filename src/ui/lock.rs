@@ -75,7 +75,7 @@ impl LockScreen {
                 return;
             }
             if *self.password != *self.confirm {
-                self.error = Some("The passwords do not match.".into());
+                self.error = Some("As senhas não coincidem.".into());
                 return;
             }
         } else if self.password.is_empty() {
@@ -143,10 +143,10 @@ impl LockScreen {
                     brand(ui, Align::Min);
                     ui.add_space(28.0);
                     for (icon, title, text) in [
-                        (icons::BOOK_OPEN_TEXT, "Project students", "Meetings, coursework and deadlines by course"),
-                        (icons::BUILDINGS, "Placements", "Visit requests, replies and line managers"),
-                        (icons::CHAT_CIRCLE_TEXT, "Studies advisees", "Contact and meetings for each semester"),
-                        (icons::LOCK_SIMPLE, "Encrypted", "Password protected, with an optional key file"),
+                        (icons::BOOK_OPEN_TEXT, "TCC e iniciação científica", "Reuniões, entregas, relatórios e defesas"),
+                        (icons::GRADUATION_CAP, "Pós-graduação", "Lato e stricto sensu, com prazos de qualificação e defesa"),
+                        (icons::COINS, "Bolsas", "CNPq, CAPES, FAPs e outras, com vigência e prorrogações"),
+                        (icons::LOCK_SIMPLE, "Criptografado", "Protegido por senha, com arquivo-chave opcional"),
                     ] {
                         ui.horizontal(|ui| {
                             theme::icon_badge(ui, icon, theme::ACCENT, 38.0);
@@ -176,41 +176,41 @@ impl LockScreen {
                             theme::icon_badge(ui, icons::LOCK_SIMPLE, theme::ACCENT, 48.0);
                             ui.add_space(4.0);
                             if first_run {
-                                ui.label(theme::serif("Create a password", 24.0));
+                                ui.label(theme::serif("Crie uma senha", 24.0));
                                 ui.label(
                                     RichText::new(
-                                        "Your data will be encrypted with this password.\n\
-                                         There is no way to recover it if forgotten.",
+                                        "Seus dados serão criptografados com esta senha.\n\
+                                         Não há como recuperá-la se você esquecer.",
                                     )
                                     .color(theme::fg(ui, theme::AMBER)),
                                 );
                                 ui.label(
                                     RichText::new(format!(
-                                        "At least {} characters – a short sentence you'll remember works well.",
+                                        "Pelo menos {} caracteres – uma frase curta que você vá lembrar funciona bem.",
                                         storage::MIN_PASSWORD_LEN
                                     ))
                                     .small()
                                     .color(theme::muted(ui)),
                                 );
                             } else {
-                                ui.label(theme::serif("Welcome back", 24.0));
-                                ui.label(RichText::new("Enter your password to unlock your data.").color(theme::muted(ui)));
+                                ui.label(theme::serif("Bem-vindo(a) de volta", 24.0));
+                                ui.label(RichText::new("Digite a sua senha para desbloquear os dados.").color(theme::muted(ui)));
                             }
                             if let KeyState::Missing(id) | KeyState::Wrong(id) = self.key {
                                 ui.add_space(8.0);
                                 let text = if matches!(self.key, KeyState::Missing(_)) {
-                                    "This data file also needs its key file, which isn't on this computer yet. \
-                                     Import it from your backup copy (for example on a USB stick)."
+                                    "Este arquivo de dados também precisa do seu arquivo-chave, que ainda não está neste computador. \
+                                     Importe-o da sua cópia de backup (por exemplo, de um pendrive)."
                                 } else {
-                                    "The key file on this computer belongs to a different data file. \
-                                     Import the right one from your backup copy."
+                                    "O arquivo-chave deste computador pertence a outro arquivo de dados. \
+                                     Importe o correto da sua cópia de backup."
                                 };
                                 ui.label(RichText::new(text).color(theme::fg(ui, theme::AMBER)));
                                 if ui
-                                    .add_enabled(!busy, egui::Button::new(format!("{}  Import key file…", icons::KEY)))
+                                    .add_enabled(!busy, egui::Button::new(format!("{}  Importar arquivo-chave…", icons::KEY)))
                                     .clicked()
                                     && let Some(src) = rfd::FileDialog::new()
-                                        .set_title("Choose your Supervisor key file")
+                                        .set_title("Escolha o seu arquivo-chave do Supervisor")
                                         .pick_file()
                                 {
                                     match storage::import_key_file(&src, id) {
@@ -229,7 +229,7 @@ impl LockScreen {
                                     widgets::password_field(
                                         ui,
                                         egui::TextEdit::singleline(&mut *self.password)
-                                            .hint_text("Password")
+                                            .hint_text("Senha")
                                             .desired_width(300.0)
                                             .margin(egui::vec2(10.0, 8.0)),
                                     )
@@ -245,7 +245,7 @@ impl LockScreen {
                                         widgets::password_field(
                                             ui,
                                             egui::TextEdit::singleline(&mut *self.confirm)
-                                                .hint_text("Confirm password")
+                                                .hint_text("Confirme a senha")
                                                 .desired_width(300.0)
                                                 .margin(egui::vec2(10.0, 8.0)),
                                         )
@@ -259,12 +259,12 @@ impl LockScreen {
                             }
 
                             ui.add_space(8.0);
-                            let label = if first_run { "Create & unlock" } else { "Unlock" };
+                            let label = if first_run { "Criar e desbloquear" } else { "Desbloquear" };
                             let button = theme::primary_button(label).min_size(egui::vec2(300.0, 38.0));
                             if busy {
                                 ui.horizontal(|ui| {
                                     ui.spinner();
-                                    ui.label("Unlocking…");
+                                    ui.label("Desbloqueando…");
                                 });
                             } else if ui.add_enabled(!needs_key, button).clicked() || (enter && !needs_key) {
                                 self.submit(ui.ctx());
@@ -278,34 +278,34 @@ impl LockScreen {
 
                 ui.add_space(12.0);
                 ui.label(
-                    RichText::new(format!("Data file: {}", self.path.display()))
+                    RichText::new(format!("Arquivo de dados: {}", self.path.display()))
                         .small()
                         .color(theme::muted(ui)),
                 );
                 if matches!(self.key, KeyState::Ready(_)) {
                     ui.label(
-                        RichText::new(format!("{} Key file found on this computer", icons::KEY))
+                        RichText::new(format!("{} Arquivo-chave encontrado neste computador", icons::KEY))
                             .small()
                             .color(theme::muted(ui)),
                     );
                 }
                 ui.horizontal(|ui| {
                     ui.add_space((ui.available_width() - 330.0).max(0.0) / 2.0);
-                    if ui.add_enabled(!busy, egui::Button::new("Open another file…").small()).clicked()
+                    if ui.add_enabled(!busy, egui::Button::new("Abrir outro arquivo…").small()).clicked()
                         && let Some(p) = rfd::FileDialog::new()
-                            .add_filter("Supervisor data", &["svt"])
+                            .add_filter("Dados do Supervisor", &["svt"])
                             .pick_file()
                     {
                         *self = Self::new(p);
                     }
-                    if ui.add_enabled(!busy, egui::Button::new("Create new file at…").small()).clicked()
+                    if ui.add_enabled(!busy, egui::Button::new("Criar arquivo novo em…").small()).clicked()
                         && let Some(p) = rfd::FileDialog::new()
-                            .add_filter("Supervisor data", &["svt"])
+                            .add_filter("Dados do Supervisor", &["svt"])
                             .set_file_name("data.svt")
                             .save_file()
                     {
                         if p.exists() {
-                            self.error = Some("That file already exists – use “Open another file…”.".into());
+                            self.error = Some("Esse arquivo já existe – use “Abrir outro arquivo…”.".into());
                         } else {
                             *self = Self::new(p);
                         }
@@ -319,19 +319,11 @@ impl LockScreen {
 
 fn brand(ui: &mut egui::Ui, align: Align) {
     ui.with_layout(Layout::top_down(align), |ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 56.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(16), theme::ACCENT);
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            icons::GRADUATION_CAP,
-            egui::FontId::proportional(30.0),
-            egui::Color32::WHITE,
-        );
+        theme::logo(ui, 64.0);
         ui.add_space(6.0);
-        ui.label(theme::serif("Supervisor", 40.0));
-        ui.label(RichText::new("Projects · Placements · Studies Advisees").color(theme::muted(ui)));
-        ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(theme::muted(ui)));
+        ui.label(theme::serif("Supervisor BR", 40.0));
+        ui.label(RichText::new("TCC · Iniciação científica · Pós-graduação").color(theme::muted(ui)));
+        ui.label(RichText::new(format!("Versão {}", env!("CARGO_PKG_VERSION"))).color(theme::muted(ui)));
 
     });
 }

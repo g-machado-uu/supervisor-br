@@ -1,5 +1,6 @@
-//! Look & feel: the cream / powder blue / peach / taupe / rosewood palette,
-//! bundled fonts and icons, and small painted components shared by screens.
+//! Look & feel: a pastel take on the colours of the Brazilian flag (cream
+//! with a hint of yellow, soft green, indigo blue), bundled fonts and icons,
+//! and small painted components shared by screens.
 
 use std::sync::Arc;
 
@@ -14,33 +15,43 @@ use crate::ui::icons;
 
 // Status and accent colours, tuned for text on cream. In dark mode they are
 // lightened where they're drawn (see `fg`).
-/// Deep powder blue: primary actions, project meetings, links.
-pub const ACCENT: Color32 = Color32::from_rgb(0x52, 0x78, 0x9b);
-/// Muted sage: done, held, submitted.
-pub const GREEN: Color32 = Color32::from_rgb(0x5f, 0x86, 0x64);
-/// Soft peach, deepened: waiting on something; placement visits.
-pub const AMBER: Color32 = Color32::from_rgb(0xbf, 0x76, 0x45);
-/// Deep rosewood: overdue, no reply, destructive.
-pub const RED: Color32 = Color32::from_rgb(0x9c, 0x4a, 0x52);
-/// Taupe: secondary text and neutral states; reminders.
-pub const GREY: Color32 = Color32::from_rgb(0x8c, 0x7e, 0x71);
-/// Dusky mauve, between rosewood and taupe: PhD students.
-pub const PLUM: Color32 = Color32::from_rgb(0x7d, 0x5f, 0x84);
+/// Indigo blue of the flag's globe: primary actions, TCC meetings, links.
+pub const ACCENT: Color32 = Color32::from_rgb(0x33, 0x60, 0x9a);
+/// Flag green: done, held, submitted; tutoria.
+pub const GREEN: Color32 = Color32::from_rgb(0x36, 0x72, 0x49);
+/// Deep gold of the flag's rhombus: waiting on something; estágio visits.
+pub const AMBER: Color32 = Color32::from_rgb(0x8c, 0x60, 0x0f);
+/// Pau-brasil red: overdue, no reply, destructive.
+pub const RED: Color32 = Color32::from_rgb(0xa2, 0x46, 0x3f);
+/// Olive grey: secondary text and neutral states; reminders.
+pub const GREY: Color32 = Color32::from_rgb(0x6d, 0x6f, 0x62);
+/// Jacarandá purple: postgraduate students.
+pub const PLUM: Color32 = Color32::from_rgb(0x6f, 0x5a, 0x92);
+/// Teal: iniciação científica.
+pub const TEAL: Color32 = Color32::from_rgb(0x2b, 0x6f, 0x70);
 
-// Palette 4 surfaces.
-const CREAM: Color32 = Color32::from_rgb(0xf6, 0xf1, 0xe9);
-const IVORY: Color32 = Color32::from_rgb(0xff, 0xfc, 0xf7);
-const POWDER: Color32 = Color32::from_rgb(0xcc, 0xdb, 0xe8);
-const SAND: Color32 = Color32::from_rgb(0xef, 0xe8, 0xdd);
-const LINE: Color32 = Color32::from_rgb(0xe6, 0xdd, 0xd0);
-const INK: Color32 = Color32::from_rgb(0x3d, 0x37, 0x32);
+// Flag colours, softened, for the little flag in the logo.
+const FLAG_GREEN: Color32 = Color32::from_rgb(0x2e, 0x9a, 0x5c);
+const FLAG_YELLOW: Color32 = Color32::from_rgb(0xf6, 0xd3, 0x4a);
+const FLAG_BLUE: Color32 = Color32::from_rgb(0x2a, 0x4b, 0x8d);
 
-const DARK_BG: Color32 = Color32::from_rgb(0x1d, 0x1b, 0x19);
-const DARK_CARD: Color32 = Color32::from_rgb(0x28, 0x25, 0x22);
-const DARK_SIDEBAR: Color32 = Color32::from_rgb(0x25, 0x2e, 0x37);
-const DARK_RAISED: Color32 = Color32::from_rgb(0x34, 0x30, 0x2c);
-const DARK_LINE: Color32 = Color32::from_rgb(0x3d, 0x38, 0x33);
-const DARK_INK: Color32 = Color32::from_rgb(0xec, 0xe5, 0xdb);
+// Light surfaces.
+const CREAM: Color32 = Color32::from_rgb(0xf5, 0xf2, 0xe3);
+const IVORY: Color32 = Color32::from_rgb(0xff, 0xfd, 0xf6);
+/// Pastel green of the sidebar.
+const MINT: Color32 = Color32::from_rgb(0xcf, 0xe4, 0xd2);
+/// Pastel blue of selections.
+const POWDER: Color32 = Color32::from_rgb(0xcd, 0xda, 0xee);
+const SAND: Color32 = Color32::from_rgb(0xee, 0xea, 0xdb);
+const LINE: Color32 = Color32::from_rgb(0xe2, 0xdd, 0xc6);
+const INK: Color32 = Color32::from_rgb(0x2c, 0x38, 0x30);
+
+const DARK_BG: Color32 = Color32::from_rgb(0x17, 0x1f, 0x1a);
+const DARK_CARD: Color32 = Color32::from_rgb(0x20, 0x29, 0x23);
+const DARK_SIDEBAR: Color32 = Color32::from_rgb(0x1e, 0x33, 0x27);
+const DARK_RAISED: Color32 = Color32::from_rgb(0x2b, 0x35, 0x2e);
+const DARK_LINE: Color32 = Color32::from_rgb(0x36, 0x42, 0x3a);
+const DARK_INK: Color32 = Color32::from_rgb(0xe6, 0xea, 0xdf);
 
 const SEMIBOLD: &str = "semibold";
 const SERIF: &str = "serif";
@@ -121,23 +132,23 @@ fn visuals(dark: bool) -> Visuals {
         (CREAM, IVORY, SAND, LINE, INK)
     };
     let hover = if dark {
-        Color32::from_rgb(0x40, 0x3b, 0x36)
+        Color32::from_rgb(0x38, 0x44, 0x3b)
     } else {
-        Color32::from_rgb(0xe8, 0xdf, 0xd2)
+        Color32::from_rgb(0xe6, 0xe1, 0xcb)
     };
     let radius = CornerRadius::same(8);
     v.panel_fill = bg;
     v.window_fill = card;
     v.faint_bg_color = if dark {
-        Color32::from_rgb(0x2d, 0x2a, 0x26)
+        Color32::from_rgb(0x25, 0x2f, 0x28)
     } else {
-        Color32::from_rgb(0xfa, 0xf6, 0xf0)
+        Color32::from_rgb(0xfa, 0xf8, 0xee)
     };
-    v.extreme_bg_color = if dark { DARK_BG } else { Color32::from_rgb(0xfb, 0xf8, 0xf3) };
+    v.extreme_bg_color = if dark { DARK_BG } else { Color32::from_rgb(0xfc, 0xfa, 0xf1) };
     v.text_edit_bg_color = Some(if dark {
-        Color32::from_rgb(0x21, 0x1f, 0x1c)
+        Color32::from_rgb(0x1b, 0x23, 0x1e)
     } else {
-        Color32::from_rgb(0xfb, 0xf8, 0xf3)
+        Color32::from_rgb(0xfc, 0xfa, 0xf1)
     });
     v.code_bg_color = raised;
     v.window_stroke = Stroke::new(1.0, line);
@@ -150,7 +161,7 @@ fn visuals(dark: bool) -> Visuals {
     v.error_fg_color = fg_for(dark, RED);
     v.hyperlink_color = fg_for(dark, ACCENT);
     v.selection.bg_fill = if dark {
-        Color32::from_rgb(0x3a, 0x4d, 0x5f)
+        Color32::from_rgb(0x2f, 0x45, 0x63)
     } else {
         POWDER
     };
@@ -165,7 +176,7 @@ fn visuals(dark: bool) -> Visuals {
     w.noninteractive.fg_stroke = Stroke::new(1.0, ink);
     for (state, fill, stroke) in [
         (&mut w.inactive, raised, line),
-        (&mut w.hovered, hover, if dark { DARK_LINE } else { Color32::from_rgb(0xd3, 0xc6, 0xb5) }),
+        (&mut w.hovered, hover, if dark { DARK_LINE } else { Color32::from_rgb(0xcc, 0xc5, 0xa8) }),
         (&mut w.active, hover, fg_for(dark, ACCENT)),
         (&mut w.open, hover, line),
     ] {
@@ -203,13 +214,13 @@ pub fn soft(ui: &Ui, c: Color32) -> Color32 {
 }
 
 pub fn sidebar_fill(ui: &Ui) -> Color32 {
-    if ui.visuals().dark_mode { DARK_SIDEBAR } else { POWDER }
+    if ui.visuals().dark_mode { DARK_SIDEBAR } else { MINT }
 }
 
 /// Secondary text colour.
 pub fn muted(ui: &Ui) -> Color32 {
     if ui.visuals().dark_mode {
-        Color32::from_rgb(0xa8, 0x9c, 0x90)
+        Color32::from_rgb(0xa3, 0xab, 0x9c)
     } else {
         GREY
     }
@@ -223,17 +234,18 @@ pub fn serif(text: impl Into<String>, size: f32) -> RichText {
     RichText::new(text).family(FontFamily::Name(SERIF.into())).size(size)
 }
 
-fn semibold_font(size: f32) -> FontId {
+pub fn semibold_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
 }
 
 /// Icon and colour for each kind of calendar item.
 pub fn kind_style(kind: EventKind) -> (&'static str, Color32) {
     match kind {
-        EventKind::FypMeeting => (icons::USERS, ACCENT),
+        EventKind::TccMeeting => (icons::BOOK_OPEN_TEXT, ACCENT),
+        EventKind::IcMeeting => (icons::FLASK, TEAL),
         EventKind::Visit => (icons::BUILDINGS, AMBER),
         EventKind::AdviseeMeeting => (icons::CHAT_CIRCLE_TEXT, GREEN),
-        EventKind::PhdMeeting => (icons::GRADUATION_CAP, PLUM),
+        EventKind::PosMeeting => (icons::GRADUATION_CAP, PLUM),
         EventKind::Deadline => (icons::PUSH_PIN, RED),
         EventKind::Reminder => (icons::BELL, GREY),
     }
@@ -315,7 +327,7 @@ pub fn page_header(ui: &mut Ui, title: &str, subtitle: &str, right: impl FnOnce(
     ui.add_space(14.0);
 }
 
-/// The filled powder-blue button used for each screen's main action.
+/// The filled indigo button used for each screen's main action.
 pub fn primary_button(text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(semibold(text).color(Color32::WHITE))
         .fill(ACCENT)
@@ -349,11 +361,11 @@ pub fn icon_badge(ui: &mut Ui, icon: &str, color: Color32, size: f32) -> Respons
 }
 
 const AVATAR_COLORS: [Color32; 5] = [
-    Color32::from_rgb(0xb5, 0xc9, 0xdc), // powder blue
-    Color32::from_rgb(0xf0, 0xc9, 0xae), // soft peach
-    Color32::from_rgb(0xc9, 0xbb, 0xab), // taupe
-    Color32::from_rgb(0xdd, 0xb3, 0xb3), // dusty rose
-    Color32::from_rgb(0xbf, 0xcf, 0xbd), // sage
+    Color32::from_rgb(0xb8, 0xca, 0xe6), // pastel indigo
+    Color32::from_rgb(0xf3, 0xe0, 0x9c), // pastel yellow
+    Color32::from_rgb(0xb7, 0xdb, 0xbf), // pastel green
+    Color32::from_rgb(0xe3, 0xb9, 0xb2), // pastel pau-brasil
+    Color32::from_rgb(0xcf, 0xc3, 0xe2), // pastel jacarandá
 ];
 
 fn initials(name: &str) -> String {
@@ -382,6 +394,15 @@ pub fn avatar(ui: &mut Ui, name: &str, size: f32) -> Response {
         if ui.visuals().dark_mode { DARK_INK } else { INK },
     );
     resp
+}
+
+/// Width of the sidebar, and its left/right padding.
+pub const SIDEBAR_WIDTH: f32 = 260.0;
+pub const SIDEBAR_PADDING: f32 = 14.0;
+
+/// Room for the label of a sidebar entry `width` wide.
+fn nav_label_width(width: f32, count: bool) -> f32 {
+    width - 40.0 - if count { 40.0 } else { 8.0 }
 }
 
 /// A sidebar entry: icon, label and an optional count, with the selected one
@@ -420,14 +441,6 @@ pub fn nav_item(ui: &mut Ui, icon: &str, label: &str, count: Option<usize>, sele
         FontId::proportional(17.0),
         icon_color,
     );
-    let font = if selected { semibold_font(14.0) } else { FontId::proportional(14.0) };
-    painter.text(
-        Pos2::new(rect.left() + 40.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        font,
-        ink,
-    );
     if let Some(n) = count {
         let text = n.to_string();
         let galley = painter.layout_no_wrap(text, semibold_font(11.5), ink.gamma_multiply(0.75));
@@ -446,6 +459,12 @@ pub fn nav_item(ui: &mut Ui, icon: &str, label: &str, count: Option<usize>, sele
         painter.rect_filled(pill, CornerRadius::same(10), pill_fill);
         painter.galley(pill.center() - galley.size() / 2.0, galley, ink);
     }
+    // The label ends before the count, with an ellipsis when it doesn't fit.
+    let font = if selected { semibold_font(14.0) } else { FontId::proportional(14.0) };
+    let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), font, ink);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(nav_label_width(rect.width(), count.is_some()));
+    let galley = painter.layout_job(job);
+    painter.galley(Pos2::new(rect.left() + 40.0, rect.center().y - galley.size().y / 2.0), galley, ink);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -563,6 +582,61 @@ pub fn ring(ui: &mut Ui, size: f32, segments: &[(f32, Color32)], centre: &str, c
     resp
 }
 
+/// A small Brazilian flag: green field, yellow rhombus and blue globe with
+/// its white band, painted into `rect` (about 10:7).
+pub fn flag(painter: &egui::Painter, rect: Rect) {
+    let r = CornerRadius::same((rect.height() * 0.18) as u8);
+    painter.rect_filled(rect, r, FLAG_GREEN);
+    let c = rect.center();
+    let (dx, dy) = (rect.width() * 0.40, rect.height() * 0.36);
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(c.x - dx, c.y),
+            Pos2::new(c.x, c.y - dy),
+            Pos2::new(c.x + dx, c.y),
+            Pos2::new(c.x, c.y + dy),
+        ],
+        FLAG_YELLOW,
+        Stroke::NONE,
+    ));
+    let globe = rect.height() * 0.24;
+    painter.circle_filled(c, globe, FLAG_BLUE);
+    // The white band across the globe.
+    let band: Vec<Pos2> = (0..=12)
+        .map(|i| {
+            let t = -0.85 + 1.7 * i as f32 / 12.0;
+            Pos2::new(c.x + globe * t, c.y - globe * 0.05 + globe * 0.25 * t * t)
+        })
+        .collect();
+    painter.add(egui::Shape::line(band, Stroke::new((globe * 0.22).max(0.8), Color32::WHITE)));
+    painter.rect_stroke(rect, r, Stroke::new(1.0, Color32::from_white_alpha(200)), egui::StrokeKind::Outside);
+}
+
+/// The app's logo: a graduation cap on an indigo tile, with a little
+/// Brazilian flag at its lower-right corner.
+pub fn logo(ui: &mut Ui, size: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    resp.widget_info(|| WidgetInfo::labeled(egui::Role::Image, true, "Logotipo do Supervisor BR"));
+    let painter = ui.painter();
+    let tile = rect;
+    painter.rect_filled(tile, CornerRadius::same((size * 0.29) as u8), ACCENT);
+    painter.text(
+        tile.center() - egui::vec2(size * 0.06, size * 0.06),
+        Align2::CENTER_CENTER,
+        icons::GRADUATION_CAP,
+        FontId::proportional(size * 0.52),
+        Color32::WHITE,
+    );
+    // Inside the tile, so it never spills over the text next to the logo.
+    let (w, inset) = (size * 0.46, size * 0.07);
+    let flag_rect = Rect::from_min_size(
+        Pos2::new(tile.right() - w - inset, tile.bottom() - w * 0.7 - inset),
+        egui::vec2(w, w * 0.7),
+    );
+    flag(painter, flag_rect);
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     /// Every non-ASCII character shown in the UI must exist in the bundled
@@ -574,9 +648,14 @@ mod tests {
             include_str!("advisee.rs"),
             include_str!("calendar.rs"),
             include_str!("dashboard.rs"),
-            include_str!("fyp.rs"),
+            include_str!("ic.rs"),
             include_str!("lock.rs"),
             include_str!("placement.rs"),
+            include_str!("pos.rs"),
+            include_str!("steps.rs"),
+            include_str!("tcc.rs"),
+            include_str!("../model.rs"),
+            include_str!("../pt.rs"),
             include_str!("settings.rs"),
             include_str!("student_form.rs"),
             include_str!("student_list.rs"),
@@ -630,11 +709,31 @@ mod tests {
         }
     }
 
+    /// The fixed sidebar entries fit next to their counts without being cut
+    /// short, even in the semibold of the selected entry.
+    #[test]
+    fn sidebar_labels_fit() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::fonts());
+        let mut out = ctx.run_ui(Default::default(), |_| {});
+        out.textures_delta.clear();
+        let room = super::nav_label_width(super::SIDEBAR_WIDTH - 2.0 * super::SIDEBAR_PADDING, true);
+        let labels = ["Iniciação científica", "Todos os alunos", "Configurações"]
+            .into_iter()
+            .chain(crate::model::PosGroup::ALL.iter().map(|g| g.label()));
+        for label in labels {
+            let width = ctx.fonts_mut(|f| {
+                f.layout_no_wrap(label.into(), super::semibold_font(14.0), egui::Color32::WHITE).size().x
+            });
+            assert!(width <= room, "{label:?} is {width:.0}px wide, the sidebar has room for {room:.0}px");
+        }
+    }
+
     #[test]
     fn initials_of_names() {
-        assert_eq!(super::initials("Aisha Khan"), "AK");
-        assert_eq!(super::initials("Sean O'Neill"), "SO");
-        assert_eq!(super::initials("Li"), "L");
+        assert_eq!(super::initials("Ana Souza"), "AS");
+        assert_eq!(super::initials("Joana d'Ávila"), "JD");
+        assert_eq!(super::initials("Íris"), "Í");
         assert_eq!(super::initials(""), "");
     }
 }

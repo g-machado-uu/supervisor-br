@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a82b8"/>
+      <stop offset="1" stop-color="#33609a"/>
+    </linearGradient>
+    <clipPath id="flagclip"><rect x="132" y="150" width="104" height="72" rx="12"/></clipPath>
+  </defs>
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#bg)"/>
+  <!-- clipboard -->
+  <rect x="62" y="92" width="116" height="124" rx="12" fill="#fffdf6"/>
+  <path d="M84 132h72M84 160h44M84 188h30" stroke="#d9d3b8" stroke-width="10" stroke-linecap="round"/>
+  <!-- mortarboard -->
+  <path d="M120 40 198 74 120 108 42 74Z" fill="#26324a"/>
+  <path d="M78 90v22c0 10 19 18 42 18s42-8 42-18V90l-42 18Z" fill="#26324a"/>
+  <path d="M198 74v34" stroke="#f6d34a" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="198" cy="112" r="7" fill="#f6d34a"/>
+  <!-- Brazilian flag -->
+  <rect x="128" y="146" width="112" height="80" rx="15" fill="#ffffff"/>
+  <g clip-path="url(#flagclip)">
+    <rect x="132" y="150" width="104" height="72" fill="#2e9a5c"/>
+    <path d="M144 186 184 159 224 186 184 213Z" fill="#f6d34a"/>
+    <circle cx="184" cy="186" r="17" fill="#2a4b8d"/>
+    <path d="M168.5 182q15.5-6 31 4" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>

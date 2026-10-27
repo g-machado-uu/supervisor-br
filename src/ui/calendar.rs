@@ -8,6 +8,7 @@ use egui::{RichText, Ui};
 use uuid::Uuid;
 
 use crate::model::{Database, Event, EventKind, MeetingChange, Semester};
+use crate::pt;
 use crate::ui::{icons, theme, widgets};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,7 +43,7 @@ pub struct CalendarState {
     week_heights: HashMap<NaiveDate, f32>,
     /// What those heights were measured for.
     heights_for: Option<ListKey>,
-    /// The "Postpone meeting" dialog, while open.
+    /// The "Remarcar reunião" dialog, while open.
     postpone: Option<Postpone>,
 }
 
@@ -111,7 +112,7 @@ fn monday_of(date: NaiveDate) -> NaiveDate {
 
 fn shown(db: &Database, st: &CalendarState, e: &Event, today: NaiveDate) -> bool {
     let kind = match e.kind {
-        EventKind::FypMeeting | EventKind::AdviseeMeeting | EventKind::PhdMeeting => st.meetings,
+        EventKind::TccMeeting | EventKind::IcMeeting | EventKind::AdviseeMeeting | EventKind::PosMeeting => st.meetings,
         EventKind::Visit => st.visits,
         EventKind::Deadline => st.deadlines,
         EventKind::Reminder => st.reminders,
@@ -154,15 +155,15 @@ pub fn show(
 
     let n = st.selected.len();
     let subtitle = match n {
-        0 => "Meetings, visits and deadlines · tick items to export them".to_string(),
-        1 => "1 item selected for export".to_string(),
-        n => format!("{n} items selected for export"),
+        0 => "Reuniões, visitas e prazos · marque itens para exportá-los".to_string(),
+        1 => "1 item selecionado para exportar".to_string(),
+        n => format!("{n} itens selecionados para exportar"),
     };
-    theme::page_header(ui, "Calendar", &subtitle, |ui| {
+    theme::page_header(ui, "Agenda", &subtitle, |ui| {
         if ui
-            .add_enabled(n > 0, theme::primary_button(format!("{}  Export {n} selected", icons::EXPORT)))
-            .on_hover_text("Save the selected items as an .ics file")
-            .on_disabled_hover_text("Tick the items to export")
+            .add_enabled(n > 0, theme::primary_button(format!("{}  Exportar {n} selecionado(s)", icons::EXPORT)))
+            .on_hover_text("Salvar os itens selecionados em um arquivo .ics")
+            .on_disabled_hover_text("Marque os itens para exportar")
             .clicked()
         {
             action = CalAction::Export(st.selected.clone());
@@ -174,8 +175,8 @@ pub fn show(
             ui,
             &mut st.layout,
             &[
-                (Layout::List, &format!("{} List", icons::LIST_BULLETS)),
-                (Layout::Month, &format!("{} Month", icons::CALENDAR_DOTS)),
+                (Layout::List, &format!("{} Lista", icons::LIST_BULLETS)),
+                (Layout::Month, &format!("{} Mês", icons::CALENDAR_DOTS)),
             ],
         );
         ui.add_space(6.0);
@@ -187,10 +188,10 @@ pub fn show(
                     ui,
                     &mut range,
                     &[
-                        (Range::Upcoming, "Upcoming"),
-                        (Range::Semester(Semester::S1), "Semester 1"),
-                        (Range::Semester(Semester::S2), "Semester 2"),
-                        (Range::All, "Everything"),
+                        (Range::Upcoming, "Próximos"),
+                        (Range::Semester(Semester::S1), "1º semestre"),
+                        (Range::Semester(Semester::S2), "2º semestre"),
+                        (Range::All, "Tudo"),
                     ],
                 );
                 if range != Range::Semester(Semester::S2) || has_sem2 {
@@ -198,14 +199,14 @@ pub fn show(
                 }
             }
             Layout::Month => {
-                if ui.button(icons::CARET_LEFT).on_hover_text("Previous month").clicked() {
+                if ui.button(icons::CARET_LEFT).on_hover_text("Mês anterior").clicked() {
                     st.month = st.month - Months::new(1);
                 }
-                ui.label(theme::serif(st.month.format("%B %Y").to_string(), 20.0));
-                if ui.button(icons::CARET_RIGHT).on_hover_text("Next month").clicked() {
+                ui.label(theme::serif(pt::month_year(st.month), 20.0));
+                if ui.button(icons::CARET_RIGHT).on_hover_text("Próximo mês").clicked() {
                     st.month = st.month + Months::new(1);
                 }
-                if ui.button("Today").clicked() {
+                if ui.button("Hoje").clicked() {
                     st.month = first_of_month(today);
                 }
             }
@@ -213,12 +214,12 @@ pub fn show(
     });
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        theme::toggle_pill(ui, &mut st.meetings, icons::USERS, "Meetings", theme::ACCENT);
-        theme::toggle_pill(ui, &mut st.visits, icons::BUILDINGS, "Visits", theme::AMBER);
-        theme::toggle_pill(ui, &mut st.deadlines, icons::PUSH_PIN, "Deadlines", theme::RED);
-        theme::toggle_pill(ui, &mut st.reminders, icons::BELL, "Reminders", theme::GREY);
+        theme::toggle_pill(ui, &mut st.meetings, icons::USERS, "Reuniões", theme::ACCENT);
+        theme::toggle_pill(ui, &mut st.visits, icons::BUILDINGS, "Visitas", theme::AMBER);
+        theme::toggle_pill(ui, &mut st.deadlines, icons::PUSH_PIN, "Prazos", theme::RED);
+        theme::toggle_pill(ui, &mut st.reminders, icons::BELL, "Lembretes", theme::GREY);
         ui.separator();
-        if ui.button("Select all shown").clicked() {
+        if ui.button("Selecionar todos visíveis").clicked() {
             st.selected.extend(
                 events
                     .iter()
@@ -226,14 +227,14 @@ pub fn show(
                     .map(|e| e.uid.clone()),
             );
         }
-        if ui.button("Clear").clicked() {
+        if ui.button("Limpar").clicked() {
             st.selected.clear();
         }
         ui.separator();
-        ui.checkbox(&mut st.as_series, format!("{} Repeats as one series", icons::REPEAT))
-            .on_hover_text("Selecting any week exports the whole series, ending when it ends, with cancelled and moved weeks");
-        ui.checkbox(with_guests, format!("{} Students as guests", icons::PAPER_PLANE_TILT))
-            .on_hover_text("You as organiser and the students (and line managers for visits) as guests, so Outlook can send the invitations");
+        ui.checkbox(&mut st.as_series, format!("{} Repetições como uma série", icons::REPEAT))
+            .on_hover_text("Selecionar qualquer semana exporta a série inteira, até o fim, com as semanas canceladas e remarcadas");
+        ui.checkbox(with_guests, format!("{} Alunos como convidados", icons::PAPER_PLANE_TILT))
+            .on_hover_text("Você como organizador e os alunos (e supervisores, nas visitas) como convidados, para o Outlook ou Google Agenda enviar os convites");
     });
     ui.add_space(10.0);
 
@@ -256,21 +257,21 @@ pub fn show(
 /// Right-click menu of a meeting whose time has come.
 fn meeting_menu(ui: &mut Ui, e: &Event, st: &mut CalendarState, today: NaiveDate, action: &mut CalAction) {
     if e.done {
-        if ui.button(format!("{} Mark as not held", icons::X)).clicked() {
+        if ui.button(format!("{} Marcar como não realizada", icons::X)).clicked() {
             *action = CalAction::Change(e.clone(), MeetingChange::Held(false));
             ui.close();
         }
     } else {
-        if ui.button(format!("{} Mark as held", icons::CHECK)).clicked() {
+        if ui.button(format!("{} Marcar como realizada", icons::CHECK)).clicked() {
             *action = CalAction::Change(e.clone(), MeetingChange::Held(true));
             ui.close();
         }
-        if ui.button(format!("{} Postpone…", icons::CALENDAR_BLANK)).clicked() {
+        if ui.button(format!("{} Remarcar…", icons::CALENDAR_BLANK)).clicked() {
             st.postpone = Some(Postpone::new(e, today));
             ui.close();
         }
     }
-    if ui.button(format!("{} Open student", icons::STUDENT)).clicked() {
+    if ui.button(format!("{} Abrir aluno", icons::STUDENT)).clicked() {
         *action = CalAction::Open(e.student_id);
         ui.close();
     }
@@ -285,30 +286,30 @@ fn postpone_dialog(ui: &mut Ui, st: &mut CalendarState, action: &mut CalAction) 
         ui.set_width(440.0);
         ui.horizontal(|ui| {
             theme::icon_badge(ui, icons::CALENDAR_BLANK, theme::ACCENT, 40.0);
-            ui.label(theme::serif("Postpone meeting", 22.0));
+            ui.label(theme::serif("Remarcar reunião", 22.0));
         });
         ui.add_space(4.0);
         ui.label(&p.event.title);
         let planned = match p.event.time {
-            Some(t) => format!("{} at {}", p.event.date.format("%a %d %b %Y"), t.format("%H:%M")),
-            None => p.event.date.format("%a %d %b %Y").to_string(),
+            Some(t) => format!("{} às {}", pt::date(p.event.date), t.format("%H:%M")),
+            None => pt::date(p.event.date),
         };
-        ui.label(RichText::new(format!("Was planned for {planned}")).small().color(theme::muted(ui)));
+        ui.label(RichText::new(format!("Estava prevista para {planned}")).small().color(theme::muted(ui)));
         ui.add_space(8.0);
         widgets::form_grid(ui, "postpone-grid", |ui| {
-            ui.label("New date");
+            ui.label("Nova data");
             widgets::opt_date(ui, "date", &mut p.date);
             ui.end_row();
-            ui.label("Time");
+            ui.label("Horário");
             widgets::opt_time(ui, "time", &mut p.time);
             ui.end_row();
         });
         ui.add_space(12.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add_enabled(p.date.is_some(), theme::primary_button("Postpone")).clicked() {
+            if ui.add_enabled(p.date.is_some(), theme::primary_button("Remarcar")).clicked() {
                 postpone = true;
             }
-            if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 34.0))).clicked() {
+            if ui.add(egui::Button::new("Cancelar").min_size(egui::vec2(0.0, 34.0))).clicked() {
                 cancel = true;
             }
         });
@@ -335,7 +336,7 @@ fn list(
             ui.vertical_centered(|ui| {
                 ui.add_space(30.0);
                 ui.label(RichText::new(icons::CALENDAR_CHECK).size(40.0).color(theme::muted(ui)));
-                ui.label(RichText::new("Nothing here.").color(theme::muted(ui)).size(16.0));
+                ui.label(RichText::new("Nada por aqui.").color(theme::muted(ui)).size(16.0));
                 ui.add_space(30.0);
             });
         });
@@ -362,13 +363,13 @@ fn list(
                     }
                 }
                 let sunday = monday + Duration::days(6);
-                let dates = format!("{} – {}", monday.format("%d %b"), sunday.format("%d %b %Y"));
+                let dates = format!("{} – {}", pt::day_month(monday), pt::day_month_year(sunday));
                 let heading = match teaching_week_of(db, monday) {
                     Some((sem, week)) => {
                         let sem = if sem == Semester::S2 { 2 } else { 1 };
-                        format!("Semester {sem}, week {week}")
+                        format!("{sem}º semestre, semana {week}")
                     }
-                    None => "Outside teaching".to_string(),
+                    None => "Fora do período letivo".to_string(),
                 };
                 let this_week = (monday..=sunday).contains(&today);
                 let selectable: Vec<&str> = items
@@ -401,7 +402,7 @@ fn list(
                     ui.label(theme::semibold(heading).size(15.0));
                     ui.label(RichText::new(dates).color(theme::muted(ui)));
                     if this_week {
-                        theme::chip(ui, "this week", theme::ACCENT);
+                        theme::chip(ui, "esta semana", theme::ACCENT);
                     }
                 });
                 ui.add_space(2.0);
@@ -441,8 +442,8 @@ fn row(ui: &mut Ui, e: &Event, st: &mut CalendarState, now: NaiveDateTime, actio
             let faded = e.cancelled || e.done;
             let color = if faded { theme::muted(ui) } else { theme::fg(ui, color) };
             let when = match e.time {
-                Some(t) => format!("{} {}", e.date.format("%a %d"), t.format("%H:%M")),
-                None => format!("{} all day", e.date.format("%a %d")),
+                Some(t) => format!("{} {}", pt::weekday_day(e.date), t.format("%H:%M")),
+                None => format!("{} dia todo", pt::weekday_day(e.date)),
             };
             ui.add_sized([110.0, 20.0], egui::Label::new(RichText::new(when).color(color)));
             ui.label(RichText::new(icon).size(16.0).color(color));
@@ -455,7 +456,7 @@ fn row(ui: &mut Ui, e: &Event, st: &mut CalendarState, now: NaiveDateTime, actio
             let title = ui
                 .add(egui::Label::new(title).sense(egui::Sense::click()))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Open student");
+                .on_hover_text("Abrir aluno");
             if title.clicked() {
                 *action = CalAction::Open(e.student_id);
             }
@@ -464,18 +465,18 @@ fn row(ui: &mut Ui, e: &Event, st: &mut CalendarState, now: NaiveDateTime, actio
             }
             if e.series.is_some() {
                 ui.label(RichText::new(icons::REPEAT).color(theme::muted(ui)))
-                    .on_hover_text("Repeating meeting");
+                    .on_hover_text("Reunião recorrente");
             }
             if e.cancelled {
-                theme::chip(ui, "cancelled", theme::GREY);
+                theme::chip(ui, "cancelada", theme::GREY);
             } else if e.moved() {
-                theme::chip(ui, "moved", theme::AMBER);
+                theme::chip(ui, "remarcada", theme::AMBER);
             }
             if e.done && !e.cancelled {
                 let text = if e.kind == EventKind::Deadline {
-                    "submitted"
+                    "concluído"
                 } else {
-                    "done"
+                    "realizada"
                 };
                 theme::chip(ui, text, theme::GREEN);
             }
@@ -490,15 +491,15 @@ fn row(ui: &mut Ui, e: &Event, st: &mut CalendarState, now: NaiveDateTime, actio
             }
             if started && !e.done {
                 if ui
-                    .small_button(format!("{} Held", icons::CHECK))
-                    .on_hover_text("Mark this meeting as held")
+                    .small_button(format!("{} Realizada", icons::CHECK))
+                    .on_hover_text("Marcar esta reunião como realizada")
                     .clicked()
                 {
                     *action = CalAction::Change(e.clone(), MeetingChange::Held(true));
                 }
                 if ui
-                    .small_button("Postpone…")
-                    .on_hover_text("Move this meeting to another day")
+                    .small_button("Remarcar…")
+                    .on_hover_text("Passar esta reunião para outro dia")
                     .clicked()
                 {
                     st.postpone = Some(Postpone::new(e, now.date()));
@@ -551,8 +552,8 @@ fn month(
 
     ui.label(
         RichText::new(
-            "Click an item to select it, double-click to open the student. \
-             Right-click a past meeting to mark it held or postpone it.",
+            "Clique em um item para selecioná-lo; clique duas vezes para abrir o aluno. \
+             Clique com o botão direito em uma reunião passada para marcá-la como realizada ou remarcá-la.",
         )
             .small()
             .color(theme::muted(ui)),
@@ -563,7 +564,7 @@ fn month(
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             ui.horizontal(|ui| {
                 ui.add_sized([week_col, 18.0], egui::Label::new(""));
-                for day in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] {
+                for day in pt::WEEKDAYS_SHORT {
                     ui.add_sized(
                         [col, 18.0],
                         egui::Label::new(
@@ -588,12 +589,12 @@ fn month(
                 let height = (24.0 + 22.0 * busiest as f32).max(84.0);
                 ui.horizontal_top(|ui| {
                     let week = teaching_week_of(db, monday)
-                        .map_or_else(String::new, |(_, w)| format!("W{w}"));
+                        .map_or_else(String::new, |(_, w)| format!("S{w}"));
                     ui.add_sized(
                         [week_col, 22.0],
                         egui::Label::new(theme::semibold(week).small().color(theme::fg(ui, theme::ACCENT))),
                     )
-                    .on_hover_text("Teaching week");
+                    .on_hover_text("Semana letiva");
                     for d in 0..7 {
                         let date = monday + Duration::days(d);
                         let items = by_day.get(&date).map_or(&[][..], Vec::as_slice);
@@ -673,9 +674,9 @@ fn day_cell(
                         let faded = e.cancelled || e.done;
                         let mut hover = e.title.clone();
                         if e.cancelled {
-                            hover.push_str("\nCancelled");
+                            hover.push_str("\nCancelada");
                         } else if e.moved() {
-                            hover.push_str("\nMoved");
+                            hover.push_str("\nRemarcada");
                         }
                         if e.online {
                             hover.push_str(&format!("\n{} {}", icons::DESKTOP, e.platform.label()));
@@ -684,7 +685,7 @@ fn day_cell(
                         }
                         let started = started(e, now);
                         if started && !e.done {
-                            hover.push_str("\nRight-click to mark it held or postpone it");
+                            hover.push_str("\nBotão direito para marcar como realizada ou remarcar");
                         }
                         let pill = egui::Button::new(text)
                             .truncate()

@@ -270,10 +270,7 @@ fn push_details(out: &mut String, item: &CalItem, settings: &Settings, invite: b
         push_line(out, &format!("LOCATION:{}", escape(location)));
     }
     if let Some(link) = meeting_link(e, settings) {
-        let join = match e.platform {
-            Platform::Teams => "Join on Microsoft Teams",
-            Platform::GoogleMeet => "Join with Google Meet",
-        };
+        let join = format!("Participar pelo {}", e.platform.long_label());
         push_line(
             out,
             &format!("DESCRIPTION:{}", escape(&format!("{join}:\n{link}"))),
@@ -282,12 +279,13 @@ fn push_details(out: &mut String, item: &CalItem, settings: &Settings, invite: b
         push_line(out, &format!("URL:{link}"));
     }
     let category = match e.kind {
-        EventKind::FypMeeting => "Project",
-        EventKind::Visit => "Placement",
-        EventKind::AdviseeMeeting => "Advisee",
-        EventKind::PhdMeeting => "Research",
-        EventKind::Deadline => "Deadline",
-        EventKind::Reminder => "Reminder",
+        EventKind::TccMeeting => "TCC",
+        EventKind::IcMeeting => "Iniciação científica",
+        EventKind::Visit => "Estágio",
+        EventKind::AdviseeMeeting => "Tutoria",
+        EventKind::PosMeeting => "Pós-graduação",
+        EventKind::Deadline => "Prazo",
+        EventKind::Reminder => "Lembrete",
     };
     push_line(out, &format!("CATEGORIES:{category}"));
     if matches!(e.kind, EventKind::Deadline | EventKind::Reminder) {
@@ -338,8 +336,8 @@ pub fn meeting_link<'a>(e: &'a Event, settings: &'a Settings) -> Option<&'a str>
 fn location(e: &Event) -> Option<&str> {
     match (e.online, e.location.is_empty()) {
         (true, _) => Some(match e.platform {
-            Platform::Teams => "Microsoft Teams Meeting",
-            Platform::GoogleMeet => "Google Meet",
+            Platform::Teams => "Reunião do Microsoft Teams",
+            other => other.long_label(),
         }),
         (false, false) => Some(&e.location),
         (false, true) => None,
@@ -362,7 +360,7 @@ pub fn calendar(items: &[CalItem], settings: &Settings, invite: bool, tz: &TimeZ
     let mut out = String::new();
     push_line(&mut out, "BEGIN:VCALENDAR");
     push_line(&mut out, "VERSION:2.0");
-    push_line(&mut out, "PRODID:-//Supervisor//Student Tracker//EN");
+    push_line(&mut out, "PRODID:-//Supervisor BR//Acompanhamento de alunos//PT");
     push_line(&mut out, "CALSCALE:GREGORIAN");
     push_line(&mut out, "METHOD:PUBLISH");
     if items.iter().any(|i| i.event.time.is_some()) {
@@ -371,7 +369,7 @@ pub fn calendar(items: &[CalItem], settings: &Settings, invite: bool, tz: &TimeZ
     for item in items {
         let e = &item.event;
         push_line(&mut out, "BEGIN:VEVENT");
-        push_line(&mut out, &format!("UID:{}@supervisor.local", e.uid));
+        push_line(&mut out, &format!("UID:{}@supervisor-br.local", e.uid));
         push_line(&mut out, &format!("DTSTAMP:{stamp}"));
         push_line(&mut out, "SEQUENCE:0");
         push_times(&mut out, &zone, e.date, e.time);
@@ -403,7 +401,7 @@ pub fn calendar(items: &[CalItem], settings: &Settings, invite: bool, tz: &TimeZ
             .filter(|o| o.rescheduled());
         for o in moved {
             push_line(&mut out, "BEGIN:VEVENT");
-            push_line(&mut out, &format!("UID:{}@supervisor.local", e.uid));
+            push_line(&mut out, &format!("UID:{}@supervisor-br.local", e.uid));
             push_line(
                 &mut out,
                 &week_property(&zone, "RECURRENCE-ID", o.planned, e.time),
@@ -440,12 +438,12 @@ mod tests {
             date,
             time: time.and_then(|h| NaiveTime::from_hms_opt(h, 0, 0)),
             kind,
-            title: "BEng project meeting – Smith, J".into(),
+            title: "Orientação de TCC – Silva, J".into(),
             done: false,
             online,
             platform: Platform::Teams,
             link: String::new(),
-            location: "MG.201".into(),
+            location: "Sala 201".into(),
             series: None,
             cancelled: false,
         }
@@ -457,8 +455,8 @@ mod tests {
             series: None,
             attendees: vec![
                 Attendee {
-                    name: "Smith, J".into(),
-                    email: "smith-j@ulster.ac.uk".into(),
+                    name: "Silva, J".into(),
+                    email: "silva.j@exemplo.edu.br".into(),
                 },
                 Attendee {
                     name: "Bad".into(),
@@ -470,8 +468,8 @@ mod tests {
 
     fn settings(link: &str) -> Settings {
         Settings {
-            my_name: "Gabriel Machado".into(),
-            my_email: "me@ulster.ac.uk".into(),
+            my_name: "Prof. Exemplo".into(),
+            my_email: "prof@exemplo.edu.br".into(),
             teams_link: link.into(),
             ..Default::default()
         }
@@ -487,7 +485,7 @@ mod tests {
             item(event(
                 d(2026, 11, 9),
                 Some(14),
-                EventKind::FypMeeting,
+                EventKind::TccMeeting,
                 false,
             )),
             item(event(d(2026, 11, 9), None, EventKind::Deadline, false)),
@@ -496,7 +494,7 @@ mod tests {
         assert_eq!(ics.matches("BEGIN:VEVENT").count(), 2);
         assert!(ics.contains("DTSTART;TZID=Local:20261109T140000"));
         assert!(ics.contains("DTSTART;VALUE=DATE:20261109"));
-        assert!(ics.contains("SUMMARY:BEng project meeting – Smith\\, J"));
+        assert!(ics.contains("SUMMARY:Orientação de TCC – Silva\\, J"));
         assert!(ics.contains("TRANSP:TRANSPARENT"));
         assert!(!ics.contains("ORGANIZER") && !ics.contains("ATTENDEE"));
         assert!(ics.lines().all(|l| l.len() <= 76));
@@ -508,7 +506,7 @@ mod tests {
             &[item(event(
                 d(2026, 10, 30),
                 Some(14),
-                EventKind::FypMeeting,
+                EventKind::TccMeeting,
                 false,
             ))],
             &settings(""),
@@ -551,7 +549,7 @@ mod tests {
             &[item(event(
                 d(2026, 10, 23),
                 Some(14),
-                EventKind::FypMeeting,
+                EventKind::TccMeeting,
                 false,
             ))],
             &settings(""),
@@ -560,11 +558,11 @@ mod tests {
         );
         let unfolded = unfold(&ics);
         assert!(ics.contains("METHOD:PUBLISH"));
-        assert!(ics.contains("ORGANIZER;CN=Gabriel Machado:mailto:me@ulster.ac.uk"));
-        assert!(unfolded.contains("ATTENDEE;CN=\"Smith, J\";ROLE=REQ-PARTICIPANT"));
-        assert!(unfolded.contains(":mailto:smith-j@ulster.ac.uk\r\n"));
+        assert!(ics.contains("ORGANIZER;CN=Prof. Exemplo:mailto:prof@exemplo.edu.br"));
+        assert!(unfolded.contains("ATTENDEE;CN=\"Silva, J\";ROLE=REQ-PARTICIPANT"));
+        assert!(unfolded.contains(":mailto:silva.j@exemplo.edu.br\r\n"));
         assert!(!ics.contains("evil"), "malformed addresses are dropped");
-        assert!(ics.contains("LOCATION:MG.201"));
+        assert!(ics.contains("LOCATION:Sala 201"));
     }
 
     #[test]
@@ -572,16 +570,16 @@ mod tests {
         let teams = item(event(
             d(2026, 10, 30),
             Some(14),
-            EventKind::FypMeeting,
+            EventKind::TccMeeting,
             true,
         ));
         let without = calendar(std::slice::from_ref(&teams), &settings(""), true, &uk());
-        assert!(without.contains("LOCATION:Microsoft Teams Meeting"));
+        assert!(without.contains("LOCATION:Reunião do Microsoft Teams"));
         assert!(!without.contains("DESCRIPTION"));
 
         let link = "https://teams.microsoft.com/l/meetup-join/abc";
         let with = unfold(&calendar(std::slice::from_ref(&teams), &settings(link), true, &uk()));
-        assert!(with.contains("DESCRIPTION:Join on Microsoft Teams:\\n"));
+        assert!(with.contains("DESCRIPTION:Participar pelo Microsoft Teams:\\n"));
         assert!(with.contains(&format!("URL:{link}")));
 
         // Commas and semicolons stay as they are in the URI.
@@ -600,7 +598,7 @@ mod tests {
     fn meeting_links_and_google_meet() {
         let teams_link = "https://teams.microsoft.com/l/meetup-join/abc";
         let own = "https://teams.microsoft.com/l/meetup-join/own";
-        let mut e = event(d(2026, 10, 30), Some(14), EventKind::FypMeeting, true);
+        let mut e = event(d(2026, 10, 30), Some(14), EventKind::TccMeeting, true);
         e.link = own.into();
         let ics = unfold(&calendar(&[item(e.clone())], &settings(teams_link), true, &uk()));
         assert!(ics.contains(&format!("URL:{own}")), "the meeting's own link wins");
@@ -614,7 +612,7 @@ mod tests {
         let meet = "https://meet.google.com/abc-defg-hij";
         e.link = meet.into();
         let ics = unfold(&calendar(&[item(e)], &settings(""), true, &uk()));
-        assert!(ics.contains("DESCRIPTION:Join with Google Meet:\\n"));
+        assert!(ics.contains("DESCRIPTION:Participar pelo Google Meet:\\n"));
         assert!(ics.contains(&format!("URL:{meet}")));
     }
 
@@ -623,7 +621,7 @@ mod tests {
         let mut series = item(event(
             d(2026, 10, 19),
             Some(14),
-            EventKind::FypMeeting,
+            EventKind::TccMeeting,
             false,
         ));
         series.series = Some(SeriesRule {
@@ -650,7 +648,7 @@ mod tests {
         assert!(ics.contains("RRULE:FREQ=WEEKLY;INTERVAL=1;UNTIL=20261207T140000Z"));
         assert!(ics.contains("EXDATE;TZID=Local:20261109T140000"));
         assert_eq!(ics.matches("BEGIN:VEVENT").count(), 2);
-        assert_eq!(ics.matches("UID:meeting-x@supervisor.local").count(), 2);
+        assert_eq!(ics.matches("UID:meeting-x@supervisor-br.local").count(), 2);
         assert!(ics.contains("RECURRENCE-ID;TZID=Local:20261116T140000"));
         assert!(ics.contains("DTSTART;TZID=Local:20261117T100000"));
         assert!(ics.lines().all(|l| l.len() <= 76));
@@ -658,7 +656,7 @@ mod tests {
 
     #[test]
     fn email_check() {
-        assert!(valid_email(" g.machado@ulster.ac.uk "));
+        assert!(valid_email(" prof.exemplo@exemplo.edu.br "));
         assert!(!valid_email("no-at-sign"));
         assert!(!valid_email("a@b"));
         assert!(!valid_email("a@b.com;x"));
@@ -666,6 +664,6 @@ mod tests {
         assert!(!valid_email("x@y.com/path"));
         assert!(!valid_email("a@b@c.com"));
         assert!(!valid_email("a@.com"));
-        assert!(valid_email("sean.o'neill+placement@company.co.uk"));
+        assert!(valid_email("joana.d'avila+estagio@empresa.com.br"));
     }
 }

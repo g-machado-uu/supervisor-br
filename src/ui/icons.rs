@@ -1,7 +1,7 @@
 //! Phosphor line icons (regular weight), from the bundled `Phosphor.ttf`.
 //!
 //! The font sits right after the text font in every family, so these can be
-//! mixed into any label, e.g. `format!("{} Add student", icons::PLUS)`.
+//! mixed into any label, e.g. `format!("{} Adicionar aluno", icons::PLUS)`.
 
 pub const ARCHIVE: &str = "\u{E00C}";
 pub const ARROW_RIGHT: &str = "\u{E06C}";
@@ -13,13 +13,17 @@ pub const CALENDAR_CHECK: &str = "\u{E712}";
 pub const CALENDAR_DOTS: &str = "\u{E7B4}";
 pub const CARET_LEFT: &str = "\u{E138}";
 pub const CARET_RIGHT: &str = "\u{E13A}";
+pub const COINS: &str = "\u{E78E}";
 pub const CHAT_CIRCLE_TEXT: &str = "\u{E16E}";
 pub const CHECK: &str = "\u{E182}";
 pub const CHECK_CIRCLE: &str = "\u{E184}";
 pub const CLOCK: &str = "\u{E19A}";
 pub const DESKTOP: &str = "\u{E560}";
 pub const FLOPPY_DISK: &str = "\u{E248}";
+pub const EYE: &str = "\u{E220}";
+pub const EYE_SLASH: &str = "\u{E224}";
 pub const EXPORT: &str = "\u{EAF0}";
+pub const FLASK: &str = "\u{E79E}";
 pub const GEAR_SIX: &str = "\u{E272}";
 pub const GRADUATION_CAP: &str = "\u{E62C}";
 pub const HOURGLASS: &str = "\u{E2B2}";
@@ -46,7 +50,7 @@ pub const X: &str = "\u{E4F6}";
 
 #[cfg(test)]
 pub const ALL: &[&str] = &[
-    ARCHIVE, ARROW_RIGHT, BELL, BOOK_OPEN_TEXT, BUILDINGS, CALENDAR_BLANK, CALENDAR_CHECK,
+    ARCHIVE, ARROW_RIGHT, BELL, BOOK_OPEN_TEXT, BUILDINGS, COINS, EYE, EYE_SLASH, FLASK, CALENDAR_BLANK, CALENDAR_CHECK,
     CALENDAR_DOTS, CARET_LEFT, CARET_RIGHT, CHAT_CIRCLE_TEXT, CHECK, CHECK_CIRCLE, CLOCK,
     DESKTOP, EXPORT, FLOPPY_DISK, GEAR_SIX, GRADUATION_CAP, HOURGLASS, HOUSE, KEY, LINK, LIST_BULLETS,
     LOCK_SIMPLE, MAGNIFYING_GLASS, MAP_PIN, MOON, PAPER_PLANE_TILT, PLUS, PUSH_PIN, REPEAT,

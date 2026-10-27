@@ -70,7 +70,7 @@ impl KdfParams {
         {
             Ok(())
         } else {
-            bail!("the data file asks for unusual key-derivation settings, so it was not opened (it may be damaged)")
+            bail!("o arquivo de dados pede parâmetros incomuns de derivação de chave e não foi aberto (pode estar danificado)")
         }
     }
 
@@ -98,11 +98,11 @@ pub enum VaultError {
 impl std::fmt::Display for VaultError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::WrongPassword => "Incorrect password (or the data file is damaged).",
-            Self::KeyFileMissing => "This data file also needs its key file, which isn't on this computer.",
-            Self::WrongKeyFile => "This key file belongs to a different data file.",
-            Self::InUse => "This data file is already open in another Supervisor window.",
-            Self::ChangedOnDisk => "The data file was changed somewhere else since it was unlocked.",
+            Self::WrongPassword => "Senha incorreta (ou o arquivo de dados está danificado).",
+            Self::KeyFileMissing => "Este arquivo de dados também precisa do seu arquivo-chave, que não está neste computador.",
+            Self::WrongKeyFile => "Este arquivo-chave pertence a outro arquivo de dados.",
+            Self::InUse => "Este arquivo de dados já está aberto em outra janela do Supervisor.",
+            Self::ChangedOnDisk => "O arquivo de dados foi alterado em outro lugar depois de ser desbloqueado.",
         })
     }
 }
@@ -127,9 +127,9 @@ impl KeyFile {
     }
 
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = Zeroizing::new(fs::read(path).with_context(|| format!("reading {}", path.display()))?);
+        let bytes = Zeroizing::new(fs::read(path).with_context(|| format!("lendo {}", path.display()))?);
         if bytes.len() != KEY_FILE_LEN {
-            bail!("{} is not a Supervisor key file", path.display());
+            bail!("{} não é um arquivo-chave do Supervisor", path.display());
         }
         let mut key = Zeroizing::new([0u8; KEY_FILE_LEN]);
         key.copy_from_slice(&bytes);
@@ -230,14 +230,14 @@ struct Header {
 impl Header {
     /// Parses and sanity-checks the header; also returns its length.
     fn parse(bytes: &[u8], path: &Path) -> Result<(Self, usize)> {
-        let not_ours = || anyhow!("{} is not a Supervisor data file", path.display());
+        let not_ours = || anyhow!("{} não é um arquivo de dados do Supervisor", path.display());
         if bytes.len() < V1_HEADER_LEN + NONCE_LEN || &bytes[..4] != MAGIC {
             return Err(not_ours());
         }
         let len = match bytes[4] {
             V1 => V1_HEADER_LEN,
             V2 => V2_HEADER_LEN,
-            v => bail!("unsupported data file version {v} – it may need a newer Supervisor"),
+            v => bail!("versão {v} do arquivo de dados não suportada – talvez precise de um Supervisor mais novo"),
         };
         if bytes.len() < len + NONCE_LEN {
             return Err(not_ours());
@@ -253,7 +253,7 @@ impl Header {
         if len == V2_HEADER_LEN {
             let flags = bytes[V1_HEADER_LEN];
             if flags & !FLAG_KEY_FILE != 0 {
-                bail!("this data file needs a newer Supervisor");
+                bail!("este arquivo de dados precisa de um Supervisor mais novo");
             }
             if flags & FLAG_KEY_FILE != 0 {
                 key_id = Some(bytes[V1_HEADER_LEN + 1..V2_HEADER_LEN].try_into().expect("id"));
@@ -279,17 +279,17 @@ impl Header {
 }
 
 fn project_dirs() -> Option<directories::ProjectDirs> {
-    directories::ProjectDirs::from("", "", "Supervisor")
+    directories::ProjectDirs::from("", "", "Supervisor-BR")
 }
 
 pub fn default_path() -> PathBuf {
     project_dirs()
         .map(|d| d.data_dir().join("data.svt"))
-        .unwrap_or_else(|| PathBuf::from("supervisor-data.svt"))
+        .unwrap_or_else(|| PathBuf::from("supervisor-br-data.svt"))
 }
 
-/// Where this computer keeps its key file: `~/.config/supervisor` on Linux,
-/// `%APPDATA%\Supervisor\config` on Windows and `~/Library/Preferences/Supervisor`
+/// Where this computer keeps its key file: `~/.config/supervisor-br` on Linux,
+/// `%APPDATA%\Supervisor-BR\config` on Windows and `~/Library/Preferences/Supervisor-BR`
 /// on macOS (not Application Support, where the data file lives by default).
 pub fn key_file_path() -> Option<PathBuf> {
     project_dirs().map(|d| d.preference_dir().join("key.bin"))
@@ -303,16 +303,16 @@ fn derive_key(
 ) -> Result<Zeroizing<[u8; 32]>> {
     params.check()?;
     let p = Params::new(params.m_cost_kib, params.t_cost, params.p_cost, Some(32))
-        .map_err(|e| anyhow!("invalid key-derivation parameters: {e}"))?;
+        .map_err(|e| anyhow!("parâmetros de derivação de chave inválidos: {e}"))?;
     let argon2 = match key_file {
         Some(k) => Argon2::new_with_secret(&k.0[..], Algorithm::Argon2id, Version::V0x13, p)
-            .map_err(|e| anyhow!("key derivation failed: {e}"))?,
+            .map_err(|e| anyhow!("falha na derivação da chave: {e}"))?,
         None => Argon2::new(Algorithm::Argon2id, Version::V0x13, p),
     };
     let mut key = Zeroizing::new([0u8; 32]);
     argon2
         .hash_password_into(password.as_bytes(), salt, key.as_mut())
-        .map_err(|e| anyhow!("key derivation failed: {e}"))?;
+        .map_err(|e| anyhow!("falha na derivação da chave: {e}"))?;
     Ok(key)
 }
 
@@ -345,7 +345,7 @@ fn decrypt(bytes: &[u8], path: &Path, password: &str, key_file: Option<&KeyFile>
             )
             .map_err(|_| VaultError::WrongPassword)?,
     );
-    let db = serde_json::from_slice(&plaintext).context("decrypted data could not be read")?;
+    let db = serde_json::from_slice(&plaintext).context("os dados descriptografados não puderam ser lidos")?;
     let seal = Seal {
         params: header.params,
         salt: header.salt,
@@ -379,7 +379,7 @@ impl Vault {
     pub fn open(path: &Path, password: &str, key_file: Option<&KeyFile>) -> Result<(Self, Database)> {
         let lock = lock_file(path)?;
         let read = || -> io::Result<_> { Ok((fs::metadata(path)?, fs::read(path)?)) };
-        let (meta, bytes) = read().with_context(|| format!("reading {}", path.display()))?;
+        let (meta, bytes) = read().with_context(|| format!("lendo {}", path.display()))?;
         let (seal, db) = decrypt(&bytes, path, password, key_file)?;
         let vault = Self {
             path: path.to_path_buf(),
@@ -495,7 +495,7 @@ fn sealed(seal: &Seal, db: &Database) -> Result<Vec<u8>> {
                 aad: &header,
             },
         )
-        .map_err(|_| anyhow!("encryption failed"))?;
+        .map_err(|_| anyhow!("falha na criptografia"))?;
     let mut bytes = Vec::with_capacity(header.len() + NONCE_LEN + ciphertext.len());
     bytes.extend_from_slice(&header);
     bytes.extend_from_slice(&nonce);
@@ -531,7 +531,7 @@ impl Writer {
         if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
             create_private_dir(dir)?;
         }
-        let reading = || format!("reading {}", self.path.display());
+        let reading = || format!("lendo {}", self.path.display());
         let mut backed_up = false;
         match fs::metadata(&self.path) {
             Ok(meta) => {
@@ -543,7 +543,7 @@ impl Writer {
                         return Err(VaultError::ChangedOnDisk.into());
                     }
                     if backup {
-                        write_atomic(&sibling(&self.path, "bak"), &old).context("writing backup")?;
+                        write_atomic(&sibling(&self.path, "bak"), &old).context("gravando o backup")?;
                         backed_up = true;
                     }
                 }
@@ -552,7 +552,7 @@ impl Writer {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).with_context(reading),
         }
-        let meta = write_atomic(&self.path, bytes).context("replacing data file")?;
+        let meta = write_atomic(&self.path, bytes).context("substituindo o arquivo de dados")?;
         Ok(Written {
             on_disk: OnDisk::of(bytes, &meta),
             backed_up,
@@ -562,7 +562,7 @@ impl Writer {
 
 /// The key file a data file asks for, if any (reads only the header).
 pub fn required_key_id(path: &Path) -> Result<Option<[u8; ID_LEN]>> {
-    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let bytes = fs::read(path).with_context(|| format!("lendo {}", path.display()))?;
     Ok(Header::parse(&bytes, path)?.0.key_id)
 }
 
@@ -576,7 +576,7 @@ pub fn local_key_file() -> Result<Option<KeyFile>> {
 
 /// Make `key` this computer's key file.
 pub fn install_key_file(key: &KeyFile) -> Result<()> {
-    install_key_file_at(key, &key_file_path().context("no folder for settings on this computer")?)
+    install_key_file_at(key, &key_file_path().context("não há pasta de configurações neste computador")?)
 }
 
 /// A different key file already at `dest` is kept beside it as
@@ -584,12 +584,12 @@ pub fn install_key_file(key: &KeyFile) -> Result<()> {
 fn install_key_file_at(key: &KeyFile, dest: &Path) -> Result<()> {
     if dest.exists() {
         let existing = KeyFile::read(dest)
-            .with_context(|| format!("{} is in the way; move it somewhere else first", dest.display()))?;
+            .with_context(|| format!("{} está no caminho; mova-o para outro lugar primeiro", dest.display()))?;
         if existing.id() == key.id() {
             return Ok(());
         }
         let aside = dest.with_file_name(format!("key-{}.bin", &hex(&existing.id())[..8]));
-        fs::rename(dest, &aside).context("moving the previous key file aside")?;
+        fs::rename(dest, &aside).context("movendo o arquivo-chave anterior")?;
     }
     if let Some(dir) = dest.parent() {
         create_private_dir(dir)?;
@@ -612,10 +612,10 @@ pub fn import_key_file(src: &Path, expected: [u8; ID_LEN]) -> Result<KeyFile> {
 /// folder the key file already lives in.
 pub fn save_key_backup(key: &KeyFile, dest: &Path, data_file: &Path) -> Result<()> {
     if same_folder(dest, data_file) {
-        bail!("Choose another place: a backup next to the data file would let anyone with the data file open it.");
+        bail!("Escolha outro lugar: um backup junto ao arquivo de dados permitiria que qualquer pessoa com o arquivo de dados o abrisse.");
     }
     if key_file_path().is_some_and(|k| same_folder(dest, &k)) {
-        bail!("Choose another place, such as a USB stick: this is where the key file already is.");
+        bail!("Escolha outro lugar, como um pendrive: o arquivo-chave já está nesta pasta.");
     }
     key.write(dest)
 }
@@ -632,6 +632,7 @@ pub fn password_problem(password: &str) -> Option<String> {
         "password", "passw0rd", "qwerty", "letmein", "welcome", "iloveyou", "admin", "monkey",
         "dragon", "football", "sunshine", "princess", "baseball", "superman", "trustno1",
         "supervisor", "university", "ulster", "student", "changeme", "secret", "abc",
+        "senha", "senha123", "universidade", "aluno", "professor", "orientador", "brasil", "segredo",
     ];
     const RUNS: &[&str] = &[
         "abcdefghijklmnopqrstuvwxyz",
@@ -640,7 +641,7 @@ pub fn password_problem(password: &str) -> Option<String> {
     ];
     if password.chars().count() < MIN_PASSWORD_LEN {
         return Some(format!(
-            "Use at least {MIN_PASSWORD_LEN} characters – a short sentence you'll remember works well."
+            "Use pelo menos {MIN_PASSWORD_LEN} caracteres – uma frase curta que você vá lembrar funciona bem."
         ));
     }
     let lower = password.to_lowercase();
@@ -652,7 +653,7 @@ pub fn password_problem(password: &str) -> Option<String> {
         || COMMON.contains(&core)
         || RUNS.iter().any(|run| run.contains(lower.as_str()) || (!core.is_empty() && run.contains(core)))
     {
-        return Some("That password is too easy to guess – try a short sentence instead.".into());
+        return Some("Essa senha é fácil demais de adivinhar – tente uma frase curta.".into());
     }
     None
 }
@@ -745,7 +746,7 @@ fn canonical(path: &Path) -> PathBuf {
 fn lock_file(path: &Path) -> Result<Option<fs::File>> {
     // Tests open throwaway files; keep their locks out of the real app folder.
     let dir = if cfg!(test) {
-        Some(std::env::temp_dir().join("supervisor-test-locks"))
+        Some(std::env::temp_dir().join("supervisor-br-test-locks"))
     } else {
         project_dirs().map(|d| d.data_local_dir().join("locks"))
     };
@@ -820,10 +821,10 @@ mod tests {
 
     fn sample() -> Database {
         let mut db = Database::default();
-        db.settings.my_email = "someone@ulster.ac.uk".into();
+        db.settings.my_email = "alguem@exemplo.edu.br".into();
         db.students.push(Student {
             name: "Grace".into(),
-            b_number: "B00123456".into(),
+            enrollment: "2026001234".into(),
             ..Default::default()
         });
         db
@@ -859,7 +860,7 @@ mod tests {
         Vault::create_with_params(&path, "right", &sample(), FAST).unwrap();
         let err = Vault::open(&path, "wrong", None).err().unwrap();
         assert_eq!(vault_error(&err), Some(VaultError::WrongPassword));
-        assert_eq!(err.to_string(), "Incorrect password (or the data file is damaged).");
+        assert_eq!(err.to_string(), "Senha incorreta (ou o arquivo de dados está danificado).");
     }
 
     #[test]
@@ -981,7 +982,7 @@ mod tests {
             fs::write(&path, raw).unwrap();
             let start = std::time::Instant::now();
             let err = Vault::open(&path, "pw", None).err().unwrap();
-            assert!(err.to_string().contains("unusual"), "{err}");
+            assert!(err.to_string().contains("incomuns"), "{err}");
             assert!(start.elapsed().as_secs() < 2);
         }
     }
