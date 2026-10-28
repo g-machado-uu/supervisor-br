@@ -5,10 +5,12 @@ use egui::{RichText, Ui};
 use uuid::Uuid;
 
 use crate::model::{Settings, TccRecord};
-use crate::ui::{theme, widgets};
+use crate::ui::widgets::Share;
+use crate::ui::{student_form, theme, widgets};
 
-/// Returns the UID of a meeting (or the defence) to save an invite for.
-pub fn show(ui: &mut Ui, tcc: &mut TccRecord, settings: &Settings, student_id: Uuid) -> Option<String> {
+/// Returns the meeting (or the defence) to send, if asked. With `private`
+/// (the student's details hidden) the grade is dots.
+pub fn show(ui: &mut Ui, tcc: &mut TccRecord, settings: &Settings, student_id: Uuid, private: bool) -> Option<Share> {
     let mut invite = None;
     widgets::form_grid(ui, "tcc-grid", |ui| {
         ui.label("Curso");
@@ -45,7 +47,49 @@ pub fn show(ui: &mut Ui, tcc: &mut TccRecord, settings: &Settings, student_id: U
     });
 
     ui.add_space(10.0);
-    theme::card_title(ui, "Entregas");
+    theme::section(ui, "Entregas", |ui| coursework(ui, tcc, settings));
+
+    ui.add_space(10.0);
+    theme::section(ui, "Defesa", |ui| {
+        widgets::form_grid(ui, "tcc-defense", |ui| {
+            ui.label("Data");
+            widgets::opt_date(ui, "defense", &mut tcc.defense);
+            ui.end_row();
+            ui.label("Horário");
+            widgets::opt_time(ui, "defense-time", &mut tcc.defense_time);
+            ui.end_row();
+            ui.label("Convidar");
+            ui.horizontal(|ui| {
+                if let Some(share) = widgets::share_buttons(ui, tcc.defense.is_some(), || format!("tcc-defense-{student_id}")) {
+                    invite = Some(share);
+                }
+            });
+            ui.end_row();
+            ui.label("Local");
+            widgets::text_field(ui, &mut tcc.defense_location, "Sala, auditório ou link");
+            ui.end_row();
+            ui.label("Banca");
+            widgets::text_field(ui, &mut tcc.committee, "Membros da banca");
+            ui.end_row();
+            ui.label("Nota final");
+            if private {
+                student_form::hidden_value(ui, &tcc.grade);
+            } else {
+                widgets::text_field(ui, &mut tcc.grade, "Ex.: 9,5");
+            }
+            ui.end_row();
+        });
+    });
+
+    ui.add_space(10.0);
+    let meetings = theme::section(ui, "Reuniões de orientação", |ui| {
+        widgets::meetings_editor(ui, "tcc-meetings", &mut tcc.meetings, None, settings)
+    });
+    invite.or(meetings.flatten())
+}
+
+/// The items handed in for each discipline of the course.
+fn coursework(ui: &mut Ui, tcc: &mut TccRecord, settings: &Settings) {
     let today = widgets::today();
     let mut any_module = false;
     for module in settings.modules_for(&tcc.programme) {
@@ -118,36 +162,4 @@ pub fn show(ui: &mut Ui, tcc: &mut TccRecord, settings: &Settings, student_id: U
                 .color(theme::muted(ui)),
         );
     }
-
-    ui.add_space(10.0);
-    theme::card_title(ui, "Defesa");
-    widgets::form_grid(ui, "tcc-defense", |ui| {
-        ui.label("Data");
-        widgets::opt_date(ui, "defense", &mut tcc.defense);
-        ui.end_row();
-        ui.label("Horário");
-        ui.horizontal(|ui| {
-            widgets::opt_time(ui, "defense-time", &mut tcc.defense_time);
-            if widgets::invite_button(ui, tcc.defense.is_some()) {
-                invite = Some(format!("tcc-defense-{student_id}"));
-            }
-        });
-        ui.end_row();
-        ui.label("Local");
-        widgets::text_field(ui, &mut tcc.defense_location, "Sala, auditório ou link");
-        ui.end_row();
-        ui.label("Banca");
-        widgets::text_field(ui, &mut tcc.committee, "Membros da banca");
-        ui.end_row();
-        ui.label("Nota final");
-        widgets::text_field(ui, &mut tcc.grade, "Ex.: 9,5");
-        ui.end_row();
-    });
-
-    ui.add_space(10.0);
-    theme::card_title(ui, "Reuniões de orientação");
-    if let Some(uid) = widgets::meetings_editor(ui, "tcc-meetings", &mut tcc.meetings, None, settings) {
-        invite = Some(uid);
-    }
-    invite
 }

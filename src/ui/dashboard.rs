@@ -7,7 +7,7 @@ use chrono::{Datelike, Duration, Local, Months, NaiveDate, Timelike};
 use egui::{Align2, Color32, CornerRadius, FontId, RichText, Sense, Ui};
 use uuid::Uuid;
 
-use crate::model::{self, Attention, Database, Event, EventKind, PosGroup, Severity};
+use crate::model::{self, Attention, Database, Event, EventKind, PosGroup, Settings, Severity};
 use crate::pt;
 use crate::ui::student_list::Category;
 use crate::ui::{icons, theme, widgets};
@@ -19,12 +19,15 @@ pub enum DashAction {
     ExportIcs,
     /// Show this month in the calendar.
     Month(NaiveDate),
+    /// Switch "Ocultar nomes" (privacy mode).
+    Privacy,
 }
 
 const GAP: f32 = 16.0;
 
-/// `events` and `attention` are the lists derived from `db`, built once per change.
-pub fn show(ui: &mut Ui, db: &Database, events: &[Event], attention: &[Attention]) -> DashAction {
+/// `events` and `attention` are the lists derived from `db`, built once per
+/// change. In privacy mode (`private`) no student is named.
+pub fn show(ui: &mut Ui, db: &Database, events: &[Event], attention: &[Attention], private: bool) -> DashAction {
     let mut action = DashAction::None;
     let today = widgets::today();
 
@@ -44,6 +47,24 @@ pub fn show(ui: &mut Ui, db: &Database, events: &[Event], attention: &[Attention
         subtitle.push_str(&format!(" · {}, semana {week}", sem.label()));
     }
     theme::page_header(ui, &title, &subtitle, |ui| {
+        let (text, hover) = if private {
+            (
+                format!("{}  Mostrar nomes", icons::EYE),
+                "Os nomes, matrículas e e-mails dos alunos estão ocultos aqui, nas listas, na agenda e nas fichas. Clique para mostrá-los de novo.",
+            )
+        } else {
+            (
+                format!("{}  Ocultar nomes", icons::EYE_SLASH),
+                "Oculta nomes, matrículas e e-mails dos alunos aqui, nas listas, na agenda e nas fichas – para quando outra pessoa pode ver a sua tela (aula, reunião, projetor).",
+            )
+        };
+        if ui
+            .add(egui::Button::new(text).selected(private).min_size(egui::vec2(0.0, 34.0)))
+            .on_hover_text(hover)
+            .clicked()
+        {
+            action = DashAction::Privacy;
+        }
         if ui
             .add(theme::primary_button(format!("{}  Exportar agenda", icons::EXPORT)))
             .on_hover_text("Reuniões, visitas e prazos em um arquivo .ics. Atenção: o arquivo exportado não é criptografado.")
@@ -68,8 +89,8 @@ pub fn show(ui: &mut Ui, db: &Database, events: &[Event], attention: &[Attention
                 ui.set_width(main);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = GAP;
-                    upcoming(ui, db, events, today, &mut action);
-                    needs_attention(ui, attention, &mut action);
+                    upcoming(ui, db, events, today, private, &mut action);
+                    needs_attention(ui, attention, private, &mut action);
                     if side == 0.0 {
                         side_column(ui, db, events, today, &mut action);
                     }
@@ -91,7 +112,7 @@ pub fn show(ui: &mut Ui, db: &Database, events: &[Event], attention: &[Attention
 }
 
 fn side_column(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, action: &mut DashAction) {
-    mini_month(ui, events, today, action);
+    mini_month(ui, &db.settings, events, today, action);
     teaching(ui, db, today);
     coursework(ui, db, today);
     grants(ui, db, today);
@@ -222,7 +243,7 @@ fn date_badge(ui: &mut Ui, date: NaiveDate, color: Color32) {
     );
 }
 
-fn upcoming(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, action: &mut DashAction) {
+fn upcoming(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, private: bool, action: &mut DashAction) {
     let days = db.settings.upcoming_days;
     let items = model::upcoming(events, today, days);
     theme::card(ui, &format!("Próximos {days} dias"), |ui| {
@@ -241,7 +262,9 @@ fn upcoming(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, acti
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 3.0;
                         ui.add_space(4.0);
-                        ui.add(egui::Label::new(theme::semibold(&e.title)).truncate());
+                        // Titles and places (a company, say) can name the student.
+                        let title = if private { e.anonymous_title() } else { &e.title };
+                        ui.add(egui::Label::new(theme::semibold(title)).truncate());
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing.x = 12.0;
                             let muted = theme::muted(ui);
@@ -253,13 +276,18 @@ fn upcoming(ui: &mut Ui, db: &Database, events: &[Event], today: NaiveDate, acti
                             ui.label(RichText::new(format!("{icon} {}", kind_name(e.kind))).small().color(theme::fg(ui, color)));
                             if e.online {
                                 ui.label(RichText::new(format!("{} {}", icons::DESKTOP, e.platform.label())).small().color(muted));
-                            } else if !e.location.is_empty() {
+                            } else if !e.location.is_empty() && !private {
                                 ui.label(RichText::new(format!("{} {}", icons::MAP_PIN, e.location)).small().color(muted));
                             }
                         });
                     });
                 })
-                .response
+                .response;
+            // Imported events have no student to open.
+            if e.student_id.is_nil() {
+                continue;
+            }
+            let row = row
                 .interact(Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Abrir aluno");
@@ -279,6 +307,7 @@ fn kind_name(kind: EventKind) -> &'static str {
         EventKind::PosMeeting => "Pós-graduação",
         EventKind::Deadline => "Prazo",
         EventKind::Reminder => "Lembrete",
+        EventKind::Other => "Evento",
     }
 }
 
@@ -291,7 +320,7 @@ fn empty(ui: &mut Ui, icon: &str, text: &str) {
     });
 }
 
-fn needs_attention(ui: &mut Ui, items: &[Attention], action: &mut DashAction) {
+fn needs_attention(ui: &mut Ui, items: &[Attention], private: bool, action: &mut DashAction) {
     theme::card(ui, "Precisa de atenção", |ui| {
         if items.is_empty() {
             ui.vertical_centered(|ui| {
@@ -317,7 +346,8 @@ fn needs_attention(ui: &mut Ui, items: &[Attention], action: &mut DashAction) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             theme::chip(ui, tag, color);
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                ui.add(egui::Label::new(&a.message).truncate());
+                                let message = if private { &a.detail } else { &a.message };
+                                ui.add(egui::Label::new(message).truncate());
                             });
                         });
                     });
@@ -333,7 +363,7 @@ fn needs_attention(ui: &mut Ui, items: &[Attention], action: &mut DashAction) {
 }
 
 /// This month, with a dot per kind of item on each day.
-fn mini_month(ui: &mut Ui, events: &[Event], today: NaiveDate, action: &mut DashAction) {
+fn mini_month(ui: &mut Ui, settings: &Settings, events: &[Event], today: NaiveDate, action: &mut DashAction) {
     let month = today.with_day(1).unwrap_or(today);
     let next = month + Months::new(1);
     let mut kinds: BTreeMap<NaiveDate, Vec<EventKind>> = BTreeMap::new();
@@ -361,12 +391,12 @@ fn mini_month(ui: &mut Ui, events: &[Event], today: NaiveDate, action: &mut Dash
         let muted = theme::muted(ui);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for d in pt::WEEKDAY_INITIALS {
+            for d in pt::weekday_initials(settings.week_starts_sunday) {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(cell, 18.0), Sense::hover());
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, d, FontId::proportional(11.0), muted);
             }
         });
-        let lead = month.weekday().num_days_from_monday() as i64;
+        let lead = (month - settings.week_start(month)).num_days();
         let days = (next - month).num_days();
         let rows = (lead + days + 6) / 7;
         let ink = ui.visuals().text_color();
@@ -388,9 +418,10 @@ fn mini_month(ui: &mut Ui, events: &[Event], today: NaiveDate, action: &mut Dash
                     } else if resp.hovered() {
                         painter.circle_filled(centre, 12.0, ui.visuals().widgets.hovered.bg_fill);
                     }
+                    let weekend = matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun);
                     let color = if is_today {
                         Color32::WHITE
-                    } else if c >= 5 {
+                    } else if weekend {
                         muted
                     } else {
                         ink
@@ -420,6 +451,7 @@ fn mini_month(ui: &mut Ui, events: &[Event], today: NaiveDate, action: &mut Dash
                 (EventKind::AdviseeMeeting, "Tutoria"),
                 (EventKind::Deadline, "Prazo"),
                 (EventKind::Reminder, "Lembrete"),
+                (EventKind::Other, "Outros"),
             ] {
                 let color = theme::fg(ui, theme::kind_style(kind).1);
                 // Keep each dot with its name when the legend wraps.
@@ -518,10 +550,14 @@ fn grants(ui: &mut Ui, db: &Database, today: NaiveDate) {
     let mut ending = 0;
     let active_pos = |s: &&crate::model::Student| s.pos.as_ref().is_none_or(|p| p.status.active());
     for s in db.students.iter().filter(|s| !s.archived).filter(active_pos) {
-        let grants = s.ic.iter().map(|i| &i.grant).chain(s.pos.iter().map(|p| &p.grant));
-        for g in grants.filter(|g| g.active() && g.end().is_none_or(|end| end >= today)) {
+        let grants = s
+            .ic
+            .iter()
+            .map(|i| (&i.grant, i.grant_end()))
+            .chain(s.pos.iter().map(|p| (&p.grant, p.grant_end())));
+        for (g, end) in grants.filter(|(g, end)| g.active() && end.is_none_or(|end| end >= today)) {
             *by_agency.entry(g.agency_label()).or_default() += 1;
-            if g.end().is_some_and(|end| (end - today).num_days() <= 90) {
+            if end.is_some_and(|end| (end - today).num_days() <= 90) {
                 ending += 1;
             }
         }

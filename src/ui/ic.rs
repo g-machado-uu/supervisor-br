@@ -5,10 +5,11 @@ use egui::{RichText, Ui};
 
 use crate::model::{IcModality, IcRecord, Settings};
 use crate::ui::steps::{self, combo};
+use crate::ui::widgets::Share;
 use crate::ui::{icons, theme, widgets};
 
-/// Returns the UID of a meeting to save an invite for.
-pub fn show(ui: &mut Ui, ic: &mut IcRecord, settings: &Settings) -> Option<String> {
+/// Returns the meeting to send, if asked.
+pub fn show(ui: &mut Ui, ic: &mut IcRecord, settings: &Settings) -> Option<Share> {
     let today = widgets::today();
     widgets::form_grid(ui, "ic-grid", |ui| {
         ui.label("Plano de trabalho");
@@ -43,11 +44,22 @@ pub fn show(ui: &mut Ui, ic: &mut IcRecord, settings: &Settings) -> Option<Strin
     });
 
     ui.add_space(10.0);
-    theme::card_title(ui, "Bolsa");
-    steps::grant_editor(ui, "ic-grant", &mut ic.grant, None);
+    theme::section(ui, "Bolsa", |ui| {
+        steps::grant_editor(ui, "ic-grant", &mut ic.grant, steps::GrantOf::Ic);
+    });
 
     ui.add_space(10.0);
-    theme::card_title(ui, "Relatórios e seminário");
+    theme::section(ui, "Relatórios e seminário", |ui| reports(ui, ic, today));
+
+    ui.add_space(10.0);
+    theme::section(ui, "Reuniões de orientação", |ui| {
+        widgets::meetings_editor(ui, "ic-meetings", &mut ic.meetings, None, settings)
+    })
+    .flatten()
+}
+
+/// The reports and the seminar, suggested from the grant, and deadlines added by hand.
+fn reports(ui: &mut Ui, ic: &mut IcRecord, today: chrono::NaiveDate) {
     ui.horizontal_wrapped(|ui| {
         if ui
             .add_enabled(
@@ -85,8 +97,4 @@ pub fn show(ui: &mut Ui, ic: &mut IcRecord, settings: &Settings) -> Option<Strin
         }
     }
     steps::custom_steps(ui, &mut ic.custom_steps, today);
-
-    ui.add_space(10.0);
-    theme::card_title(ui, "Reuniões de orientação");
-    widgets::meetings_editor(ui, "ic-meetings", &mut ic.meetings, None, settings)
 }

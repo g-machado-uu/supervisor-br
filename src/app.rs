@@ -1,5 +1,6 @@
 //! Application shell: lock state, navigation, autosave and dialogs.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -21,7 +22,7 @@ use crate::ui::calendar::{self, CalAction, CalendarState};
 use crate::ui::dashboard::{self, DashAction};
 use crate::ui::lock::{LockScreen, Unlocked};
 use crate::ui::settings::{self, KeyFileForm, PasswordForm, SettingsAction};
-use crate::ui::student_form::{self, FormAction, Role};
+use crate::ui::student_form::{self, FormAction, Role, Shown};
 use crate::ui::student_list::{self, Category, ListState};
 use crate::ui::{icons, theme, widgets};
 
@@ -286,6 +287,14 @@ struct Session {
     /// The student whose enrolment number is shown, until another is opened.
     revealed: Option<Uuid>,
     reveal_prompt: Option<RevealPrompt>,
+    /// "Ocultar nomes", switched on the dashboard: names, numbers and emails
+    /// are hidden there, in the lists, the calendar and every student's
+    /// details. Off again at every unlock.
+    private: bool,
+    /// The student whose details are shown in privacy mode.
+    peek: Option<Uuid>,
+    /// Students whose details are hidden outside privacy mode, until locked.
+    hidden: HashSet<Uuid>,
 }
 
 impl Session {
@@ -322,6 +331,9 @@ impl Session {
             }),
             revealed: None,
             reveal_prompt: None,
+            private: false,
+            peek: None,
+            hidden: HashSet::new(),
         }
     }
 
@@ -489,10 +501,14 @@ impl Session {
         if let Some(msg) = self.notice.take() {
             self.notify(ui, msg);
         }
-        // A revealed enrolment number is hidden again once another student is opened.
-        if self.revealed.is_some() && self.revealed != self.selected {
-            self.revealed = None;
+        // A revealed enrolment number, or details shown in privacy mode, are
+        // hidden again once another student is opened.
+        for shown in [&mut self.revealed, &mut self.peek] {
+            if shown.is_some() && *shown != self.selected {
+                *shown = None;
+            }
         }
+        widgets::set_week_start(ui.ctx(), self.db.settings.week_starts_sunday);
 
         if ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::L))) {
             lock = true;
@@ -720,7 +736,11 @@ impl Session {
             .db
             .student(id)
             .is_some_and(|s| self.db.enrollment_taken(&s.enrollment, Some(id)));
-        let revealed = self.revealed == Some(id);
+        let mut shown = Shown {
+            details: if self.private { self.peek == Some(id) } else { !self.hidden.contains(&id) },
+            number: self.revealed == Some(id),
+        };
+        let before = shown;
         let Database { settings, students, .. } = &mut self.db;
         let Some(student) = students.iter_mut().find(|s| s.id == id) else {
             self.selected = None;
@@ -736,14 +756,27 @@ impl Session {
             .min_size(460.0)
             .frame(frame)
             .show(ui, |ui| {
-                action = student_form::show(ui, student, settings, dup, revealed);
+                action = student_form::show(ui, student, settings, dup, &mut shown);
             });
+        if shown.details != before.details {
+            if self.private {
+                self.peek = shown.details.then_some(id);
+            } else if shown.details {
+                self.hidden.remove(&id);
+            } else {
+                self.hidden.insert(id);
+            }
+            if !shown.details {
+                self.revealed = None;
+            }
+        }
         match action {
             FormAction::None => {}
             FormAction::Close => self.selected = None,
             FormAction::Delete => self.confirm = Some(Confirm::DeleteStudent(id)),
             FormAction::RemoveRole(role) => self.confirm = Some(Confirm::RemoveRole(id, role)),
-            FormAction::Invite(uid) => self.save_invite(ui, id, &uid),
+            FormAction::Share(widgets::Share::File(uid)) => self.save_invite(ui, id, &uid),
+            FormAction::Share(widgets::Share::Google(uid)) => self.open_in_google(ui, id, &uid),
             FormAction::Reveal if self.db.settings.reveal_needs_password => {
                 self.reveal_prompt = Some(RevealPrompt {
                     student: id,
@@ -761,8 +794,13 @@ impl Session {
             View::Dashboard => {
                 let d = self.derived();
                 let (events, attention) = (Rc::clone(&d.events), Rc::clone(&d.attention));
-                match dashboard::show(ui, &self.db, &events, &attention) {
+                match dashboard::show(ui, &self.db, &events, &attention, self.private) {
                     DashAction::None => {}
+                    DashAction::Privacy => {
+                        self.private = !self.private;
+                        self.peek = None;
+                        self.revealed = None;
+                    }
                     DashAction::Open(id) => self.selected = Some(id),
                     DashAction::Goto(cat) => self.view = View::List(cat),
                     DashAction::ExportIcs => self.export_ics(ui),
@@ -776,6 +814,7 @@ impl Session {
             View::Calendar => {
                 let events = Rc::clone(&self.derived().events);
                 let mut guests = self.db.settings.export_with_guests;
+                self.calendar.private = self.private;
                 let action = calendar::show(ui, &self.db, &events, &mut self.calendar, &mut guests);
                 self.db.settings.export_with_guests = guests;
                 match action {
@@ -788,9 +827,45 @@ impl Session {
                                 MeetingChange::Held(true) => "Marcada como realizada".to_string(),
                                 MeetingChange::Held(false) => "Marcada como não realizada".to_string(),
                                 MeetingChange::Postpone(date, _) => format!("Remarcada para {}", pt::weekday_day_month(date)),
+                                MeetingChange::Cancelled(true) => "Semana cancelada".to_string(),
+                                MeetingChange::Cancelled(false) => "Semana restaurada".to_string(),
                             };
                             self.notify(ui, done);
                         }
+                    }
+                    CalAction::Move(event, date) => {
+                        if self.db.move_event(&event, date) {
+                            self.notify(ui, format!("Passou para {}", pt::weekday_day_month(date)));
+                        }
+                    }
+                    CalAction::Edit(event, details) => {
+                        if self.db.edit_event(&event, &details) {
+                            self.notify(ui, "Alterações salvas");
+                        }
+                    }
+                    CalAction::Delete(events, whole_series) => {
+                        let done = events.iter().filter(|e| self.db.delete_event(e, whole_series)).count();
+                        let msg = match (done, events.first()) {
+                            (1, Some(e)) if e.series.is_some() && !whole_series => {
+                                "Semana cancelada – clique nela com o botão direito para restaurá-la".to_string()
+                            }
+                            (1, _) => "Excluído".to_string(),
+                            (n, _) => format!("{n} itens excluídos"),
+                        };
+                        self.notify(ui, msg);
+                    }
+                    CalAction::Google(event) => {
+                        let uid = event.series.as_ref().map_or(event.uid.clone(), |(series, _)| series.clone());
+                        self.open_in_google(ui, event.student_id, &uid);
+                    }
+                    CalAction::PickImport => self.pick_import(ui),
+                    CalAction::Import(choices) => {
+                        let n = self.db.import(choices);
+                        self.notify(ui, match n {
+                            0 => "Nada importado".to_string(),
+                            1 => "1 evento importado".to_string(),
+                            n => format!("{n} eventos importados"),
+                        });
                     }
                 }
             }
@@ -803,6 +878,7 @@ impl Session {
                         search: &mut self.search,
                         show_archived: &mut self.show_archived,
                         selected: &mut self.selected,
+                        private: self.private,
                     },
                 );
                 if add
@@ -947,16 +1023,54 @@ impl Session {
             ""
         };
         let no_link = invite.event.online && ics::meeting_link(&invite.event, &self.db.settings).is_none();
-        let hint = if no_link && invite.event.platform == crate::model::Platform::Teams {
-            "importe no Outlook, abra o evento, ative “Reunião do Teams” e envie"
-        } else if no_link {
-            "importe no Outlook ou Google Agenda, abra o evento, adicione o link da reunião e envie"
-        } else {
-            "importe no Outlook ou Google Agenda, abra o evento e envie"
+        let hint = match invite.event.platform {
+            crate::model::Platform::Teams if no_link => "importe no Outlook, abra o evento, ative “Reunião do Teams” e envie",
+            crate::model::Platform::GoogleMeet if no_link => {
+                "para o Google criar o link do Meet e convidar o aluno, use o botão “Google Agenda”"
+            }
+            _ if no_link => "importe no Outlook, abra o evento, adicione o link da reunião e envie",
+            // Google Agenda drops the guests of an imported file.
+            _ => "importe no Outlook, abra o evento e envie; no Google Agenda, use o botão “Google Agenda”",
         };
         if self.write_ics(ui, &[invite], true, &format!("{name}.ics")) {
             self.notify(ui, format!("Convite salvo{series} – {hint}"));
         }
+    }
+
+    /// Open Google Agenda's "new event" page filled in with the meeting,
+    /// visit or defence `uid` (a whole series if it repeats).
+    fn open_in_google(&mut self, ui: &Ui, student_id: Uuid, uid: &str) {
+        let Some(item) = self.db.invite(student_id, uid) else {
+            return;
+        };
+        let url = ics::google_calendar_url(&item, &self.db.settings, &jiff::tz::TimeZone::system());
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        let mut msg = "Aberto no Google Agenda – confira e clique em Salvar para enviar o convite".to_string();
+        if item.series.as_ref().is_some_and(|r| !r.exceptions.is_empty()) {
+            msg.push_str("; as semanas canceladas ou remarcadas precisam ser ajustadas lá");
+        }
+        self.notify(ui, msg);
+    }
+
+    /// Ask for an .ics file and show its events for importing.
+    fn pick_import(&mut self, ui: &Ui) {
+        let Some(path) = rfd::FileDialog::new().add_filter("iCalendar", &["ics"]).pick_file() else {
+            return;
+        };
+        let text = match std::fs::read(&path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) => {
+                self.notify(ui, format!("Falha ao ler {}: {e}", path.display()));
+                return;
+            }
+        };
+        let events = crate::ics_import::parse(&text, &jiff::tz::TimeZone::system());
+        if events.is_empty() {
+            self.notify(ui, "Nenhum evento encontrado neste arquivo");
+            return;
+        }
+        let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        self.calendar.import = Some(calendar::ImportDialog::new(file, events, &self.db));
     }
 
     fn change_password(&mut self, ui: &Ui) {
@@ -1619,7 +1733,7 @@ mod ui_tests {
                     tce_start: Some(today - Days::days(60)),
                     tce_end: Some(today + Days::days(120)),
                     report: due(90),
-                    visits: [
+                    visits: vec![
                         Visit {
                             request_sent: Some(today - Days::days(7)),
                             response: ReplyStatus::Replied,
@@ -2253,8 +2367,10 @@ mod ui_tests {
         }
         h.key_press(egui::Key::F20);
         h.run_steps(3);
-        let week = |monday: chrono::NaiveDate| {
-            format!("{} – {}", crate::pt::day_month(monday), crate::pt::day_month_year(monday + Days::days(6)))
+        // Weeks start on Sunday unless set otherwise.
+        let week = |day: chrono::NaiveDate| {
+            let start = crate::model::Settings::default().week_start(day);
+            format!("{} – {}", crate::pt::day_month(start), crate::pt::day_month_year(start + Days::days(6)))
         };
         assert!(h.query_by_label(&week(first)).is_some(), "first week drawn");
         assert!(h.query_by_label(&week(last)).is_none(), "weeks out of view not drawn");
@@ -2410,5 +2526,413 @@ mod ui_tests {
         h.get_by_label(&format!("{} Marcar como não realizada", icons::X)).click();
         h.run_steps(2);
         assert!(!meeting(&mut h, "Aluno Passado").held);
+    }
+
+    #[test]
+    fn calendar_edits_drags_deletes_and_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.svt");
+        let mut h = create_and_unlock(&path, false);
+        // Days in the middle of next month, so the month grid shows them.
+        let month = (crate::ui::widgets::today() + Days::days(31)).with_day(1).unwrap();
+        let day = |n: u32| month.with_day(n).unwrap();
+        let at = |hour| NaiveTime::from_hms_opt(hour, 0, 0);
+        let ana = Student {
+            name: "Ana Souza".into(),
+            email: "ana.souza@exemplo.edu.br".into(),
+            pos: Some(PosRecord {
+                meetings: vec![Meeting {
+                    date: Some(day(10)),
+                    time: at(14),
+                    online: true,
+                    platform: Platform::GoogleMeet,
+                    link: "meet.google.com/abc-defg-hij".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let bruno = Student {
+            name: "Bruno Lima".into(),
+            tcc: Some(TccRecord {
+                meetings: vec![Meeting {
+                    date: Some(day(4)),
+                    time: at(9),
+                    repeat: Some(Repeat {
+                        until: Some(day(25)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (ana_id, bruno_id) = (ana.id, bruno.id);
+        {
+            let s = session(&mut h);
+            s.db.students.extend([ana, bruno]);
+            s.view = View::Calendar;
+            s.calendar.layout = crate::ui::calendar::Layout::Month;
+            s.calendar.month = month;
+        }
+        h.key_press(egui::Key::F20);
+        h.run_steps(3);
+        let ana_meeting = |h: &mut Harness<'_, SupervisorApp>| session(h).db.student(ana_id).unwrap().pos.as_ref().unwrap().meetings[0].clone();
+        let bruno_meeting = |h: &mut Harness<'_, SupervisorApp>| session(h).db.student(bruno_id).unwrap().tcc.as_ref().unwrap().meetings[0].clone();
+
+        // Weeks start on Sunday, as usual in Brazil.
+        assert!(h.get_by_label("DOM").rect().left() < h.get_by_label("SEG").rect().left());
+        check_layout(&h, "mês começando no domingo", 0.0);
+        shot(&mut h, "30_mes_domingo");
+
+        // Drag Ana's meeting from the 10th to the 12th.
+        let from = h.get_by_label_contains("14:00").rect().center();
+        let to = h.get_by_label("12").rect().center() + egui::vec2(0.0, 30.0);
+        h.drag_at(from);
+        h.run_steps(1);
+        h.hover_at(from + egui::vec2(10.0, 5.0));
+        h.run_steps(1);
+        h.hover_at(to);
+        h.run_steps(1);
+        h.drop_at(to);
+        h.run_steps(2);
+        let m = ana_meeting(&mut h);
+        assert_eq!((m.date, m.time), (Some(day(12)), at(14)));
+
+        // Right-click: Google Agenda with the student as guest, and edit.
+        h.get_by_label_contains("Ana Souza").click_secondary();
+        h.run_steps(2);
+        shot(&mut h, "31_menu_do_item");
+        h.get_by_label(&format!("{} Abrir no Google Agenda", icons::ARROW_SQUARE_OUT)).click();
+        h.run_steps(1);
+        let opened: Vec<String> = h
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::OpenUrl(u) => Some(u.url.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            opened.iter().any(|u| u.contains("calendar.google.com")
+                && u.contains("add=ana.souza%40exemplo.edu.br")
+                && u.contains("location=https%3A%2F%2Fmeet.google.com%2Fabc-defg-hij")),
+            "{opened:?}"
+        );
+        h.run_steps(1);
+        h.get_by_label_contains("Ana Souza").click_secondary();
+        h.run_steps(2);
+        h.get_by_label(&format!("{} Editar…", icons::PENCIL_SIMPLE)).click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Link").is_some());
+        shot(&mut h, "32_editar_item");
+        h.get_by_label("Salvar").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Alterações salvas").is_some());
+
+        // Select a week of Bruno's meeting and press Delete: just that week is cancelled.
+        let week = day(11);
+        let cell = h.get_by_label("11").rect();
+        h.get_all_by_label_contains("Bruno Lima")
+            .find(|n| n.rect().center().x > cell.left() - 5.0 && n.rect().center().y > cell.top())
+            .unwrap()
+            .click();
+        h.run_steps(2);
+        h.key_press(egui::Key::Delete);
+        h.run_steps(2);
+        assert!(h.query_by_label("Excluir este item?").is_some());
+        shot(&mut h, "33_excluir_item");
+        h.get_by_label("Cancelar esta semana").click();
+        h.run_steps(2);
+        assert!(bruno_meeting(&mut h).occurrence(week).cancelled);
+        assert_eq!(bruno_meeting(&mut h).occurrences(&session(&mut h).db.settings).len(), 4);
+        // Right-click the cancelled week to bring it back.
+        h.get_all_by_label_contains("Bruno Lima")
+            .find(|n| n.rect().center().x > cell.left() - 5.0 && n.rect().center().y > cell.top())
+            .unwrap()
+            .click_secondary();
+        h.run_steps(2);
+        h.get_by_label(&format!("{} Restaurar esta semana", icons::REPEAT)).click();
+        h.run_steps(2);
+        assert!(!bruno_meeting(&mut h).occurrence(week).cancelled);
+
+        // Import: the event with Ana as a guest is ticked and becomes her meeting.
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:g1@google.com\r\nSUMMARY:Conversa sobre a dissertação\r\n\
+            DTSTART;TZID=America/Sao_Paulo:20271103T100000\r\nATTENDEE;CN=Ana:mailto:ana.souza@exemplo.edu.br\r\n\
+            END:VEVENT\r\nBEGIN:VEVENT\r\nUID:g2@google.com\r\nSUMMARY:Dentista\r\nDTSTART:20271104T120000Z\r\n\
+            END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let brasilia = jiff::tz::TimeZone::get("America/Sao_Paulo").unwrap();
+        {
+            let s = session(&mut h);
+            let events = crate::ics_import::parse(ics, &brasilia);
+            s.calendar.import = Some(calendar::ImportDialog::new("trabalho.ics".into(), events, &s.db));
+        }
+        h.run_steps(3);
+        assert!(h.query_by_label("1 para importar, 1 como reuniões de alunos").is_some());
+        shot(&mut h, "34_importar_agenda");
+        h.get_by_label("Importar 1").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("1 evento importado").is_some());
+        let s = session(&mut h);
+        let imported = &s.db.student(ana_id).unwrap().pos.as_ref().unwrap().meetings[1];
+        assert_eq!((imported.source.as_str(), imported.time), ("g1@google.com", at(10)));
+        assert_eq!(s.db.ignored_imports, ["g2@google.com"]);
+
+        // Importing the file again: "Marcar todos visíveis" leaves out the
+        // event imported before, and ticking it by hand warns it would show twice.
+        let events = crate::ics_import::parse(ics, &brasilia);
+        s.calendar.import = Some(calendar::ImportDialog::new("trabalho.ics".into(), events, &s.db));
+        h.run_steps(3);
+        assert!(h.query_by_label("Nada marcado").is_some());
+        assert!(h.query_by_label("ignorado antes").is_some() && h.query_by_label("importado antes").is_some());
+        h.get_by_label("Marcar todos visíveis").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("1 para importar, nenhum ligado a aluno").is_some(), "only the skipped one");
+        assert!(h.query_by_label_contains("já está no Supervisor").is_none());
+        // The one left unticked.
+        h.get_all_by_role(AkRole::CheckBox)
+            .find(|c| c.accesskit_node().toggled() == Some(egui::accesskit::Toggled::False))
+            .unwrap()
+            .click();
+        h.run_steps(2);
+        assert!(h.query_by_label(&format!("{} vai aparecer duas vezes", icons::WARNING)).is_some());
+        assert!(h.query_by_label(&format!("{} 1 já está no Supervisor", icons::WARNING)).is_some());
+        shot(&mut h, "35_importar_de_novo");
+        h.get_by_label("Importar 2").click();
+        h.run_steps(2);
+        // The Dentista event is in the calendar under "Outros", without a student.
+        let s = session(&mut h);
+        assert_eq!(s.db.entries.len(), 1);
+        s.calendar.month = chrono::NaiveDate::from_ymd_opt(2027, 11, 1).unwrap();
+        h.run_steps(3);
+        assert!(h.query_by_label_contains("Outros").is_some(), "the toggle for imported events");
+        assert!(h.query_by_label_contains("Dentista").is_some());
+    }
+
+    #[test]
+    fn privacy_mode_hides_names_until_revealed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.svt");
+        let mut h = create_and_unlock(&path, false);
+        let today = widgets::today();
+        let (bruno, carla) = {
+            let s = session(&mut h);
+            let mut placement = PlacementRecord {
+                company: "Metalúrgica Exemplo".into(),
+                ..Default::default()
+            };
+            placement.visits[1].date = Some(today + Days::days(3));
+            let bruno = Student {
+                name: "Bruno Lima".into(),
+                enrollment: "2026001234".into(),
+                email: "bruno.lima@exemplo.edu.br".into(),
+                tcc: Some(TccRecord {
+                    title: "Secador solar".into(),
+                    grade: "9,5".into(),
+                    meetings: vec![Meeting {
+                        date: Some(today + Days::days(2)),
+                        time: NaiveTime::from_hms_opt(10, 0, 0),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                placement: Some(placement),
+                ..Default::default()
+            };
+            let carla = Student {
+                name: "Carla Dias".into(),
+                email: "carla.dias@exemplo.edu.br".into(),
+                advisee: Some(AdviseeRecord::default()),
+                ..Default::default()
+            };
+            let ids = (bruno.id, carla.id);
+            s.db.settings.hide_enrollment = false;
+            s.db.students.extend([bruno, carla]);
+            ids
+        };
+        h.key_press(egui::Key::F20);
+        h.run_steps(3);
+        assert!(all_text(&h).contains("Bruno Lima – TCC: ainda sem contato inicial"));
+        assert!(all_text(&h).contains("Orientação de TCC – Bruno Lima"), "upcoming meeting");
+
+        // "Ocultar nomes": nobody is named on the dashboard, nor the company.
+        h.get_by_label(&format!("{}  Ocultar nomes", icons::EYE_SLASH)).click();
+        h.run_steps(2);
+        let text = all_text(&h);
+        assert!(!text.contains("Bruno") && !text.contains("Metalúrgica"), "{text}");
+        assert!(text.contains("TCC: ainda sem contato inicial") && text.contains("Orientação de TCC"));
+        check_layout(&h, "painel com nomes ocultos", 0.0);
+        shot(&mut h, "36_painel_nomes_ocultos");
+
+        // ...nor in the lists or the calendar.
+        session(&mut h).view = View::List(Category::All);
+        h.run_steps(3);
+        let text = all_text(&h);
+        assert!(!text.contains("Bruno") && !text.contains("2026001234") && !text.contains("bruno.lima"), "{text}");
+        assert!(!text.contains("Carla"));
+        session(&mut h).view = View::List(Category::Placement);
+        h.run_steps(3);
+        assert!(!all_text(&h).contains("Metalúrgica"));
+        session(&mut h).view = View::Calendar;
+        h.run_steps(3);
+        let text = all_text(&h);
+        assert!(!text.contains("Bruno") && !text.contains("Metalúrgica") && text.contains("Orientação de TCC"), "{text}");
+        shot(&mut h, "37_agenda_nomes_ocultos");
+        session(&mut h).view = View::Dashboard;
+
+        // ...nor in their details (the grade either), until revealed for one student.
+        session(&mut h).selected = Some(bruno);
+        h.run_steps(3);
+        let text = all_text(&h);
+        assert!(!text.contains("Bruno") && !text.contains("bruno.lima") && !text.contains("9,5") && !text.contains("2026001234"), "{text}");
+        shot(&mut h, "38_ficha_oculta");
+        h.get_by_label("Revelar os dados do aluno").click();
+        h.run_steps(2);
+        assert!(all_text(&h).contains("bruno.lima@exemplo.edu.br") && all_text(&h).contains("9,5"));
+        session(&mut h).selected = Some(carla);
+        h.run_steps(2);
+        assert!(!all_text(&h).contains("carla.dias"));
+        session(&mut h).selected = Some(bruno);
+        h.run_steps(2);
+        assert!(!all_text(&h).contains("bruno.lima"), "hidden again after switching students");
+
+        // Out of privacy mode, details show unless hidden for that student.
+        h.get_by_label(&format!("{}  Mostrar nomes", icons::EYE)).click();
+        h.run_steps(2);
+        assert!(all_text(&h).contains("bruno.lima@exemplo.edu.br"));
+        h.get_by_label("Ocultar os dados do aluno").click();
+        h.run_steps(2);
+        assert!(!all_text(&h).contains("bruno.lima"));
+        session(&mut h).selected = Some(carla);
+        h.run_steps(2);
+        assert!(all_text(&h).contains("carla.dias@exemplo.edu.br"));
+        session(&mut h).selected = Some(bruno);
+        h.run_steps(2);
+        assert!(!all_text(&h).contains("bruno.lima"), "still hidden for Bruno");
+        h.get_by_label("Revelar os dados do aluno").click();
+        h.run_steps(2);
+        assert!(all_text(&h).contains("bruno.lima"));
+
+        // Locking forgets it all.
+        let s = session(&mut h);
+        s.hidden.insert(bruno);
+        s.private = true;
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::L);
+        wait_until(&mut h, "locked", locked);
+        unlock(&mut h);
+        let s = session(&mut h);
+        assert!(!s.private && s.hidden.is_empty());
+    }
+
+    #[test]
+    fn role_chips_jump_to_their_folded_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.svt");
+        let mut h = create_and_unlock(&path, false);
+        let ana = Student {
+            name: "Ana Souza".into(),
+            tcc: Some(TccRecord::default()),
+            pos: Some(PosRecord::default()),
+            advisee: Some(AdviseeRecord::default()),
+            ..Default::default()
+        };
+        let id = ana.id;
+        {
+            let s = session(&mut h);
+            s.db.students.push(ana);
+            s.view = View::List(Category::All);
+            s.selected = Some(id);
+        }
+        h.run_steps(3);
+        // Fold the details away.
+        h.get_by_label(&format!("{} DADOS DO ALUNO", icons::CARET_DOWN)).click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Arquivado").is_none());
+        assert!(h.query_by_label(&format!("{} DADOS DO ALUNO", icons::CARET_RIGHT)).is_some());
+        // ...and the postgraduate section.
+        h.set_size(egui::vec2(1360.0, 2400.0));
+        h.run_steps(2);
+        h.get_all_by_label_contains("Pós-graduação").next().unwrap().click();
+        // Past the folding animation.
+        h.run_steps(20);
+        assert!(h.query_by_label(&format!("{} DATAS E PRAZOS", icons::CARET_DOWN)).is_none());
+        // Its chip opens it again and brings it into view.
+        h.set_size(egui::vec2(1360.0, 860.0));
+        h.run_steps(2);
+        h.get_by_label(&format!("{} Mestrado", icons::GRADUATION_CAP)).click();
+        h.run_steps(20);
+        shot(&mut h, "39_chip_leva_a_secao");
+        assert!(h.query_by_label(&format!("{} DATAS E PRAZOS", icons::CARET_DOWN)).is_some(), "open again");
+        let header = h.get_all_by_label_contains("Pós-graduação").next().unwrap().rect();
+        assert!(header.top() < 300.0, "scrolled to the top: {header:?}");
+    }
+
+    #[test]
+    fn visits_and_grant_end_from_the_student_panel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.svt");
+        let mut h = create_and_unlock(&path, false);
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let mut pos = PosRecord {
+            start: Some(start),
+            ..PosRecord::new(Level::MestradoAcademico)
+        };
+        pos.grant.agency = "CAPES".into();
+        pos.grant.months = 24;
+        let rafa = Student {
+            name: "Rafaela Nunes".into(),
+            placement: Some(PlacementRecord {
+                company: "Empresa Exemplo".into(),
+                ..Default::default()
+            }),
+            pos: Some(pos),
+            ..Default::default()
+        };
+        let id = rafa.id;
+        {
+            let s = session(&mut h);
+            s.db.students.push(rafa);
+            s.view = View::List(Category::Placement);
+            s.selected = Some(id);
+        }
+        // Tall enough for the postgraduate and placement sections.
+        h.set_size(egui::vec2(1360.0, 4400.0));
+        h.run_steps(3);
+        let student = |h: &mut Harness<'_, SupervisorApp>| session(h).db.student(id).unwrap().clone();
+
+        // A third visit, then fold the first away.
+        h.get_by_label(&format!("{} Adicionar visita", icons::PLUS)).click();
+        h.run_steps(2);
+        assert_eq!(student(&mut h).placement.unwrap().visits.len(), 3);
+        assert!(h.query_by_label(&format!("{} Visita 3", icons::CARET_DOWN)).is_some());
+        let modes = h.query_all_by_label("Modo").count();
+        h.get_by_label(&format!("{} Visita 1", icons::CARET_DOWN)).click();
+        h.run_steps(20);
+        assert!(h.query_by_label(&format!("{} Visita 1", icons::CARET_RIGHT)).is_some());
+        assert_eq!(h.query_all_by_label("Modo").count(), modes - 1, "its details are folded away");
+        check_layout(&h, "visitas", 0.0);
+        shot(&mut h, "40_visitas");
+
+        // The grant: 24 months from enrolment, then until the final deadline.
+        assert!(h.query_by_label("No ingresso (dom, 01 mar 2026)").is_some());
+        assert!(h.query_by_label("ter, 29 fev 2028").is_some(), "calculated end");
+        h.get_by_label("Vigência até o prazo final de conclusão").click();
+        h.run_steps(2);
+        assert!(h.query_by_label_contains("Defina o prazo final em Datas e prazos").is_some());
+        session(&mut h).db.student_mut(id).unwrap().pos.as_mut().unwrap().final_deadline.deadline =
+            chrono::NaiveDate::from_ymd_opt(2028, 6, 30);
+        h.run_steps(3);
+        assert!(h.query_by_label("até o prazo final (28 meses)").is_some());
+        assert_eq!(student(&mut h).pos.unwrap().grant_end(), chrono::NaiveDate::from_ymd_opt(2028, 6, 30));
+        check_layout(&h, "bolsa até o prazo final", 0.0);
+        shot(&mut h, "41_bolsa_ate_prazo_final");
+        // The Bolsa section folds away.
+        h.get_by_label(&format!("{} BOLSA", icons::CARET_DOWN)).click();
+        h.run_steps(20);
+        assert!(h.query_by_label("Vigência até o prazo final de conclusão").is_none());
     }
 }

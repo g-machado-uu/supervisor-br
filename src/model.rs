@@ -267,6 +267,8 @@ pub struct Settings {
     pub reveal_needs_password: bool,
     /// Deadlines of each postgraduate level, in months from enrolment.
     pub level_rules: Vec<LevelRule>,
+    /// Calendar weeks start on Sunday (usual in Brazil) rather than Monday.
+    pub week_starts_sunday: bool,
 }
 
 impl Default for Settings {
@@ -289,6 +291,7 @@ impl Default for Settings {
             hide_enrollment: true,
             reveal_needs_password: false,
             level_rules: default_level_rules(),
+            week_starts_sunday: true,
         }
     }
 }
@@ -355,6 +358,16 @@ impl Settings {
         } else {
             Semester::S1
         }
+    }
+
+    /// First day of the calendar week `date` is in (Sunday, or Monday).
+    pub fn week_start(&self, date: NaiveDate) -> NaiveDate {
+        let back = if self.week_starts_sunday {
+            date.weekday().num_days_from_sunday()
+        } else {
+            date.weekday().num_days_from_monday()
+        };
+        date - Duration::days(i64::from(back))
     }
 
     /// Teaching week number of `date`, if it falls within teaching.
@@ -446,6 +459,8 @@ pub struct Meeting {
     pub location: String,
     pub repeat: Option<Repeat>,
     pub notes: String,
+    /// UID of the calendar event it was imported from, if any.
+    pub source: String,
 }
 
 impl Default for Meeting {
@@ -461,6 +476,7 @@ impl Default for Meeting {
             location: String::new(),
             repeat: None,
             notes: String::new(),
+            source: String::new(),
         }
     }
 }
@@ -700,7 +716,9 @@ pub struct PlacementRecord {
     pub tce_end: Option<NaiveDate>,
     /// The internship report (relatório de estágio).
     pub report: Milestone,
-    pub visits: [Visit; 2],
+    /// Visits to the company, as many as the course asks for (two to start
+    /// with; older files always have two).
+    pub visits: Vec<Visit>,
 }
 
 impl Default for PlacementRecord {
@@ -714,7 +732,7 @@ impl Default for PlacementRecord {
             tce_start: None,
             tce_end: None,
             report: Milestone::default(),
-            visits: [
+            visits: vec![
                 Visit::default(),
                 Visit {
                     mode: VisitMode::FaceToFace,
@@ -722,6 +740,20 @@ impl Default for PlacementRecord {
                 },
             ],
         }
+    }
+}
+
+impl PlacementRecord {
+    /// A new visit: in person when the last one was online, and vice versa.
+    pub fn add_visit(&mut self) {
+        let mode = match self.visits.last().map(|v| v.mode) {
+            Some(VisitMode::Online) => VisitMode::FaceToFace,
+            _ => VisitMode::Online,
+        };
+        self.visits.push(Visit {
+            mode,
+            ..Default::default()
+        });
     }
 }
 
@@ -1045,6 +1077,11 @@ pub struct Grant {
     /// Months added by an extension (prorrogação).
     pub extension_months: u32,
     pub extension_reason: ExtensionReason,
+    /// The last day, typed in when it differs from the calculated one.
+    pub end_override: Option<NaiveDate>,
+    /// Postgraduate grants: it lasts until the final deadline of the course
+    /// (the defence), whatever its length in months.
+    pub until_final: bool,
 }
 
 impl Grant {
@@ -1052,12 +1089,21 @@ impl Grant {
         !self.agency.is_empty()
     }
 
-    /// Last day of the grant: start + months + extension, minus a day.
-    pub fn end(&self) -> Option<NaiveDate> {
+    /// Start + months + extension, minus a day. Without a start of its own
+    /// the grant starts with the course (`course_start`, the enrolment).
+    pub fn calculated_end(&self, course_start: Option<NaiveDate>) -> Option<NaiveDate> {
         if !self.active() || self.months == 0 {
             return None;
         }
-        add_months(self.start?, self.months + self.extension_months)?.pred_opt()
+        add_months(self.start.or(course_start)?, self.months + self.extension_months)?.pred_opt()
+    }
+
+    /// Last day of the grant: the one typed in, or the calculated one.
+    pub fn end_from(&self, course_start: Option<NaiveDate>) -> Option<NaiveDate> {
+        if !self.active() {
+            return None;
+        }
+        self.end_override.or_else(|| self.calculated_end(course_start))
     }
 
     /// "CAPES", or the name typed in for another source.
@@ -1166,6 +1212,11 @@ impl IcRecord {
         steps
     }
 
+    /// Last day of the grant, if any. An IC grant has its own start.
+    pub fn grant_end(&self) -> Option<NaiveDate> {
+        self.grant.end_from(None)
+    }
+
     pub fn milestone_mut(&mut self, key: &str) -> Option<&mut Milestone> {
         match key {
             "partial" => Some(&mut self.partial_report),
@@ -1183,11 +1234,19 @@ impl IcRecord {
             0 => 12,
             n => n,
         } + self.grant.extension_months;
+        let end = self
+            .grant
+            .end_override
+            .or_else(|| add_months(start, months).and_then(|d| d.pred_opt()));
         if self.partial_report.deadline.is_none() {
-            self.partial_report.deadline = add_months(start, months / 2);
+            self.partial_report.deadline = match self.grant.end_override {
+                // A typed-in end: half-way between the two days.
+                Some(end) if end > start => Some(start + (end - start) / 2),
+                _ => add_months(start, months / 2),
+            };
         }
         if self.final_report.deadline.is_none() {
-            self.final_report.deadline = add_months(start, months).and_then(|d| d.pred_opt());
+            self.final_report.deadline = end;
         }
     }
 
@@ -1548,6 +1607,18 @@ impl PosRecord {
         steps
     }
 
+    /// Last day of the grant, if any. Without a start of its own it starts
+    /// at enrolment; linked to the final deadline, it ends then.
+    pub fn grant_end(&self) -> Option<NaiveDate> {
+        if !self.grant.active() {
+            return None;
+        }
+        match self.final_deadline.deadline {
+            Some(deadline) if self.grant.until_final => Some(deadline),
+            _ => self.grant.end_from(self.start),
+        }
+    }
+
     /// Which postgraduate list the student is shown in.
     pub fn group(&self) -> PosGroup {
         self.level.group()
@@ -1617,9 +1688,6 @@ impl PosRecord {
                 self.annual_reports.push(Milestone::due(Some(date)));
                 year += 1;
             }
-        }
-        if self.grant.active() && self.grant.start.is_none() {
-            self.grant.start = Some(start);
         }
         if self.grant.active() && self.grant.months == 0 {
             self.grant.months = typical_grant_months(Some(self.level));
@@ -1773,6 +1841,10 @@ pub struct Database {
     pub version: u32,
     pub settings: Settings,
     pub students: Vec<Student>,
+    /// Imported calendar events that aren't linked to a student ("Outros").
+    pub entries: Vec<CalEntry>,
+    /// UIDs of imported calendar events the user chose not to import.
+    pub ignored_imports: Vec<String>,
 }
 
 impl Default for Database {
@@ -1781,8 +1853,125 @@ impl Default for Database {
             version: DB_VERSION,
             settings: Settings::default(),
             students: Vec::new(),
+            entries: Vec::new(),
+            ignored_imports: Vec::new(),
         }
     }
+}
+
+/// An event from an imported calendar, kept in the calendar without a
+/// student. Its date, time, place and repetition work like a meeting's.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct CalEntry {
+    pub title: String,
+    pub meeting: Meeting,
+}
+
+/// Which list of meetings an imported event joins.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MeetingRole {
+    Tcc,
+    Ic,
+    Pos,
+    /// The semester is the one the meeting falls in.
+    Advisee,
+}
+
+impl MeetingRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            MeetingRole::Tcc => "Orientação de TCC",
+            MeetingRole::Ic => "Orientação de IC",
+            MeetingRole::Pos => "Orientação na pós",
+            MeetingRole::Advisee => "Tutoria",
+        }
+    }
+
+    /// The roles of `s` that have meetings.
+    pub fn of(s: &Student) -> Vec<MeetingRole> {
+        let mut out = Vec::new();
+        if s.tcc.is_some() {
+            out.push(MeetingRole::Tcc);
+        }
+        if s.ic.is_some() {
+            out.push(MeetingRole::Ic);
+        }
+        if s.pos.is_some() {
+            out.push(MeetingRole::Pos);
+        }
+        if s.advisee.is_some() {
+            out.push(MeetingRole::Advisee);
+        }
+        out
+    }
+}
+
+/// An event read from another calendar, ready to become a meeting.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportedEvent {
+    pub uid: String,
+    pub title: String,
+    /// Its date, time, place and repetition; `source` is the UID.
+    pub meeting: Meeting,
+    /// Email addresses of the guests, to suggest a student.
+    pub guests: Vec<String>,
+    /// It repeats in a way the app can't follow; only its first date is kept.
+    pub repeat_dropped: bool,
+}
+
+/// Why an event of an imported calendar may not be wanted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Known {
+    /// Exported from the app, so it is here already.
+    FromSupervisor,
+    Imported,
+    Skipped,
+}
+
+impl Known {
+    pub fn label(self) -> &'static str {
+        match self {
+            Known::FromSupervisor => "do Supervisor",
+            Known::Imported => "importado antes",
+            Known::Skipped => "ignorado antes",
+        }
+    }
+
+    /// Importing it again would show it twice.
+    pub fn duplicate(self) -> bool {
+        self != Known::Skipped
+    }
+}
+
+/// What to do with one imported event.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ImportTarget {
+    Ignore,
+    /// Keep it in the calendar without a student.
+    Calendar,
+    Student(Uuid, MeetingRole),
+}
+
+/// What the calendar's edit dialog can change in an item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventDetails {
+    /// Only imported events have a title of their own.
+    pub title: Option<String>,
+    pub date: NaiveDate,
+    pub time: Option<NaiveTime>,
+    /// `None` for items without a place (visits).
+    pub place: Option<Place>,
+}
+
+/// Where a meeting happens.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Place {
+    /// `None` for a defence, which only has a location.
+    pub online: Option<bool>,
+    pub platform: Platform,
+    pub link: String,
+    pub location: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1797,6 +1986,8 @@ pub enum EventKind {
     Deadline,
     /// Advance notice of a deadline.
     Reminder,
+    /// An imported event that isn't linked to a student.
+    Other,
 }
 
 /// A dated item derived from the records, used for the dashboard, the
@@ -1804,6 +1995,7 @@ pub enum EventKind {
 #[derive(Clone, Debug)]
 pub struct Event {
     pub uid: String,
+    /// Nil for imported events without a student.
     pub student_id: Uuid,
     pub date: NaiveDate,
     pub time: Option<NaiveTime>,
@@ -1824,6 +2016,15 @@ pub struct Event {
 }
 
 impl Event {
+    /// The title without the student's name, for "Ocultar nomes". Events
+    /// without a student (from an imported calendar) are just "Evento".
+    pub fn anonymous_title(&self) -> &str {
+        if self.student_id.is_nil() {
+            return "Evento";
+        }
+        self.title.split_once(" – ").map_or(&self.title, |(title, _)| title)
+    }
+
     /// A week of a repeating meeting that was moved to another day.
     pub fn moved(&self) -> bool {
         self.series
@@ -1835,6 +2036,28 @@ impl Event {
     pub fn meeting_id(&self) -> Option<Uuid> {
         let rest = self.uid.strip_prefix("meeting-")?;
         Uuid::parse_str(rest.get(..36)?).ok()
+    }
+
+    /// Can be moved, edited and deleted from the calendar: meetings, visits,
+    /// defences and imported events, but not deadlines and their reminders,
+    /// which come from the course's dates.
+    pub fn editable(&self) -> bool {
+        !matches!(self.kind, EventKind::Deadline | EventKind::Reminder)
+    }
+
+    /// Which placement visit (from 0) this is.
+    fn visit_index(&self) -> Option<usize> {
+        let rest = self.uid.strip_prefix("visit")?;
+        let n: usize = rest.split('-').next()?.parse().ok()?;
+        n.checked_sub(1)
+    }
+
+    fn is_tcc_defense(&self) -> bool {
+        self.uid.starts_with("tcc-defense-")
+    }
+
+    fn is_pos_defense(&self) -> bool {
+        self.uid.starts_with("pos-defense-")
     }
 
     /// A dated item that isn't a meeting (deadlines, defences, …).
@@ -1864,6 +2087,8 @@ pub enum MeetingChange {
     Held(bool),
     /// Move it to this day and time.
     Postpone(NaiveDate, Option<NaiveTime>),
+    /// Cancel a week of a repeating meeting, or bring it back.
+    Cancelled(bool),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1902,13 +2127,15 @@ pub struct Attention {
     pub student_id: Uuid,
     pub severity: Severity,
     pub message: String,
+    /// The message without the student's name.
+    pub detail: String,
 }
 
 /// One event per week of `m` (only the meeting itself if it doesn't repeat).
 fn push_meeting(
     out: &mut Vec<Event>,
     settings: &Settings,
-    s: &Student,
+    student_id: Uuid,
     m: &Meeting,
     kind: EventKind,
     title: String,
@@ -1920,7 +2147,7 @@ fn push_meeting(
         };
         out.push(Event {
             uid,
-            student_id: s.id,
+            student_id,
             date: occ.date(),
             time: occ.time.or(m.time),
             kind,
@@ -1933,6 +2160,25 @@ fn push_meeting(
             series,
             cancelled: occ.cancelled,
         });
+    }
+}
+
+/// Move a meeting, or the week of a repeating one planned for `planned`,
+/// to `date` at `time`. A week back on its planned day and usual time is
+/// no longer marked as moved.
+fn reschedule(m: &mut Meeting, planned: Option<NaiveDate>, date: NaiveDate, time: Option<NaiveTime>) {
+    match planned {
+        None => {
+            m.date = Some(date);
+            m.time = time;
+        }
+        Some(planned) => {
+            let usual = m.time;
+            let mut week = m.occurrence(planned);
+            week.moved_to = (date != planned).then_some(date);
+            week.time = time.filter(|t| Some(*t) != usual);
+            m.set_occurrence(week);
+        }
     }
 }
 
@@ -1975,9 +2221,10 @@ fn step_attention(steps: Vec<Step>, today: NaiveDate, mut push: impl FnMut(Sever
     }
 }
 
-/// A grant ending soon, or that ended in the last month.
-fn grant_attention(grant: &Grant, today: NaiveDate, mut push: impl FnMut(Severity, String)) {
-    let Some(end) = grant.end() else { return };
+/// A grant ending soon, or that ended in the last month. `end` is its
+/// effective last day.
+fn grant_attention(grant: &Grant, end: Option<NaiveDate>, today: NaiveDate, mut push: impl FnMut(Severity, String)) {
+    let Some(end) = end else { return };
     let who = grant.agency_label();
     if end < today && today - end <= Duration::days(GRANT_ENDED_DAYS) {
         push(Severity::Pending, format!("bolsa {who} terminou em {}", pt::numeric(end)));
@@ -1995,6 +2242,14 @@ pub fn upcoming(events: &[Event], today: NaiveDate, days: u32) -> Vec<&Event> {
         .collect()
 }
 
+/// The words of `text`, in lower case, to look for hints in a title.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 impl Database {
     pub fn student(&self, id: Uuid) -> Option<&Student> {
         self.students.iter().find(|s| s.id == id)
@@ -2008,33 +2263,354 @@ impl Database {
     /// repeating meeting. Returns false if `event` isn't a meeting.
     pub fn change_meeting(&mut self, event: &Event, change: MeetingChange) -> bool {
         let Some(id) = event.meeting_id() else { return false };
-        let Some(m) = self
-            .student_mut(event.student_id)
-            .and_then(|s| s.meetings_mut().find(|m| m.id == id))
-        else {
+        let Some(m) = self.meeting_mut(event.student_id, id) else {
             return false;
         };
-        match &event.series {
-            None => match change {
-                MeetingChange::Held(held) => m.held = held,
-                MeetingChange::Postpone(date, time) => {
-                    m.date = Some(date);
-                    m.time = time;
+        let planned = event.series.as_ref().map(|(_, planned)| *planned);
+        match change {
+            MeetingChange::Held(held) => match planned {
+                None => m.held = held,
+                Some(planned) => {
+                    let mut week = m.occurrence(planned);
+                    week.held = held;
+                    m.set_occurrence(week);
                 }
             },
-            Some((_, planned)) => {
-                let mut week = m.occurrence(*planned);
-                match change {
-                    MeetingChange::Held(held) => week.held = held,
-                    MeetingChange::Postpone(date, time) => {
-                        week.moved_to = Some(date);
-                        week.time = time;
-                    }
-                }
+            MeetingChange::Postpone(date, time) => reschedule(m, planned, date, time),
+            MeetingChange::Cancelled(cancelled) => {
+                let Some(planned) = planned else { return false };
+                let mut week = m.occurrence(planned);
+                week.cancelled = cancelled;
                 m.set_occurrence(week);
             }
         }
         true
+    }
+
+    /// The meetings of a student or, for the nil id, of the imported events.
+    fn meetings_of(&self, student_id: Uuid) -> Box<dyn Iterator<Item = &Meeting> + '_> {
+        if student_id.is_nil() {
+            Box::new(self.entries.iter().map(|e| &e.meeting))
+        } else {
+            match self.student(student_id) {
+                Some(s) => Box::new(s.meetings()),
+                None => Box::new(std::iter::empty()),
+            }
+        }
+    }
+
+    fn meeting_mut(&mut self, student_id: Uuid, id: Uuid) -> Option<&mut Meeting> {
+        if student_id.is_nil() {
+            return self.entries.iter_mut().map(|e| &mut e.meeting).find(|m| m.id == id);
+        }
+        self.student_mut(student_id)?.meetings_mut().find(|m| m.id == id)
+    }
+
+    /// What the calendar's edit dialog shows for `e`, if it can be edited.
+    pub fn event_details(&self, e: &Event) -> Option<EventDetails> {
+        if !e.editable() {
+            return None;
+        }
+        if let Some(id) = e.meeting_id() {
+            let m = self.meetings_of(e.student_id).find(|m| m.id == id)?;
+            let title = self
+                .entries
+                .iter()
+                .find(|x| e.student_id.is_nil() && x.meeting.id == id)
+                .map(|x| x.title.clone());
+            return Some(EventDetails {
+                title,
+                date: e.date,
+                time: e.time,
+                place: Some(Place {
+                    online: Some(m.online),
+                    platform: m.platform,
+                    link: m.link.clone(),
+                    location: m.location.clone(),
+                }),
+            });
+        }
+        let s = self.student(e.student_id)?;
+        let defense = |date: Option<NaiveDate>, time, location: &str| {
+            Some(EventDetails {
+                title: None,
+                date: date?,
+                time,
+                place: Some(Place {
+                    online: None,
+                    location: location.into(),
+                    ..Default::default()
+                }),
+            })
+        };
+        if let Some(i) = e.visit_index() {
+            let v = s.placement.as_ref()?.visits.get(i)?;
+            return Some(EventDetails {
+                title: None,
+                date: v.date?,
+                time: v.time,
+                place: None,
+            });
+        }
+        if e.is_tcc_defense() {
+            let t = s.tcc.as_ref()?;
+            return defense(t.defense, t.defense_time, &t.defense_location);
+        }
+        if e.is_pos_defense() {
+            let p = s.pos.as_ref()?;
+            return defense(p.defense, p.defense_time, &p.defense_location);
+        }
+        None
+    }
+
+    /// Store what was changed in the edit dialog. For a week of a repeating
+    /// meeting the day and time change that week only, and the place every
+    /// week. Returns false if `e` can't be edited.
+    pub fn edit_event(&mut self, e: &Event, d: &EventDetails) -> bool {
+        if !e.editable() {
+            return false;
+        }
+        if let Some(id) = e.meeting_id() {
+            if let Some(title) = &d.title
+                && let Some(x) = self.entries.iter_mut().find(|x| e.student_id.is_nil() && x.meeting.id == id)
+            {
+                x.title = title.trim().into();
+            }
+            let Some(m) = self.meeting_mut(e.student_id, id) else {
+                return false;
+            };
+            if let Some(place) = &d.place {
+                m.online = place.online.unwrap_or(m.online);
+                m.platform = place.platform;
+                m.link = place.link.trim().into();
+                m.location = place.location.trim().into();
+            }
+            let planned = e.series.as_ref().map(|(_, planned)| *planned);
+            reschedule(m, planned, d.date, d.time);
+            return true;
+        }
+        let location = d.place.as_ref().map(|p| p.location.trim().to_string());
+        let Some(s) = self.student_mut(e.student_id) else {
+            return false;
+        };
+        if let Some(i) = e.visit_index() {
+            let Some(v) = s.placement.as_mut().and_then(|p| p.visits.get_mut(i)) else {
+                return false;
+            };
+            v.date = Some(d.date);
+            v.time = d.time;
+            return true;
+        }
+        if e.is_tcc_defense()
+            && let Some(t) = &mut s.tcc
+        {
+            t.defense = Some(d.date);
+            t.defense_time = d.time;
+            if let Some(location) = location {
+                t.defense_location = location;
+            }
+            return true;
+        }
+        if e.is_pos_defense()
+            && let Some(p) = &mut s.pos
+        {
+            p.defense = Some(d.date);
+            p.defense_time = d.time;
+            if let Some(location) = location {
+                p.defense_location = location;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Move `e` to another day, keeping its time.
+    pub fn move_event(&mut self, e: &Event, date: NaiveDate) -> bool {
+        let Some(details) = self.event_details(e) else {
+            return false;
+        };
+        self.edit_event(e, &EventDetails { date, ..details })
+    }
+
+    /// Delete `e`: a meeting is removed (a week of a repeating one is
+    /// cancelled, unless `whole_series`), a visit or a defence loses its
+    /// date. Returns false if `e` can't be deleted.
+    pub fn delete_event(&mut self, e: &Event, whole_series: bool) -> bool {
+        if !e.editable() {
+            return false;
+        }
+        if let Some(id) = e.meeting_id() {
+            if let (Some((_, planned)), false) = (&e.series, whole_series) {
+                let Some(m) = self.meeting_mut(e.student_id, id) else {
+                    return false;
+                };
+                let mut week = m.occurrence(*planned);
+                week.cancelled = true;
+                m.set_occurrence(week);
+                return true;
+            }
+            return self.remove_meeting(e.student_id, id);
+        }
+        let Some(s) = self.student_mut(e.student_id) else {
+            return false;
+        };
+        if let Some(i) = e.visit_index() {
+            let Some(v) = s.placement.as_mut().and_then(|p| p.visits.get_mut(i)) else {
+                return false;
+            };
+            v.date = None;
+            v.time = None;
+            return true;
+        }
+        if e.is_tcc_defense()
+            && let Some(t) = &mut s.tcc
+        {
+            t.defense = None;
+            t.defense_time = None;
+            return true;
+        }
+        if e.is_pos_defense()
+            && let Some(p) = &mut s.pos
+        {
+            p.defense = None;
+            p.defense_time = None;
+            return true;
+        }
+        false
+    }
+
+    fn remove_meeting(&mut self, student_id: Uuid, id: Uuid) -> bool {
+        let keep = |m: &Meeting| m.id != id;
+        if student_id.is_nil() {
+            let before = self.entries.len();
+            self.entries.retain(|e| keep(&e.meeting));
+            return self.entries.len() != before;
+        }
+        let Some(s) = self.student_mut(student_id) else {
+            return false;
+        };
+        let before = s.meetings().count();
+        if let Some(t) = &mut s.tcc {
+            t.meetings.retain(keep);
+        }
+        if let Some(ic) = &mut s.ic {
+            ic.meetings.retain(keep);
+        }
+        if let Some(a) = &mut s.advisee {
+            a.s1.meetings.retain(keep);
+            a.s2.meetings.retain(keep);
+        }
+        if let Some(p) = &mut s.pos {
+            p.meetings.retain(keep);
+        }
+        s.meetings().count() != before
+    }
+
+    /// Why an imported event may not be wanted: it came from this app (or
+    /// the original Supervisor), or was imported or skipped before.
+    pub fn known_import(&self, uid: &str) -> Option<Known> {
+        if uid.ends_with("@supervisor-br.local") || uid.ends_with("@supervisor.local") {
+            Some(Known::FromSupervisor)
+        } else if self
+            .students
+            .iter()
+            .flat_map(Student::meetings)
+            .chain(self.entries.iter().map(|e| &e.meeting))
+            .any(|m| m.source == uid)
+        {
+            Some(Known::Imported)
+        } else if self.ignored_imports.iter().any(|u| u == uid) {
+            Some(Known::Skipped)
+        } else {
+            None
+        }
+    }
+
+    /// The student an imported event is probably with: one of the guests,
+    /// or named in the title. The role follows words in the title.
+    pub fn suggest_student(&self, ev: &ImportedEvent) -> Option<(Uuid, MeetingRole)> {
+        let candidates = || {
+            self.students
+                .iter()
+                .filter(|s| !s.archived && !MeetingRole::of(s).is_empty())
+        };
+        let title = ev.title.to_lowercase();
+        let s = candidates()
+            .find(|s| {
+                let email = s.email.trim();
+                !email.is_empty() && ev.guests.iter().any(|g| g.trim().eq_ignore_ascii_case(email))
+            })
+            .or_else(|| {
+                candidates().find(|s| {
+                    let name = s.name.trim().to_lowercase();
+                    name.chars().count() >= 4 && title.contains(&name)
+                })
+            })?;
+        let roles = MeetingRole::of(s);
+        let title_words = words(&title);
+        // Short hints ("ic", "pós") are whole words; longer ones may start a word.
+        let hinted = |role, hints: &[&str]| {
+            roles.contains(&role)
+                && title_words
+                    .iter()
+                    .any(|w| hints.iter().any(|h| w == h || (h.chars().count() >= 5 && w.starts_with(h))))
+        };
+        let role = if hinted(MeetingRole::Advisee, &["tutoria", "tutor"]) {
+            MeetingRole::Advisee
+        } else if hinted(MeetingRole::Tcc, &["tcc"]) {
+            MeetingRole::Tcc
+        } else if hinted(MeetingRole::Ic, &["ic", "iniciação", "iniciacao", "pibic", "pibiti", "pivic"]) {
+            MeetingRole::Ic
+        } else if hinted(
+            MeetingRole::Pos,
+            &["mestrado", "doutorado", "dissertação", "dissertacao", "tese", "pós", "pos", "posdoc", "qualificação", "qualificacao"],
+        ) {
+            MeetingRole::Pos
+        } else {
+            roles[0]
+        };
+        Some((s.id, role))
+    }
+
+    /// Add the imported events as chosen; the skipped ones are remembered.
+    /// Returns how many were added.
+    pub fn import(&mut self, choices: Vec<(ImportedEvent, ImportTarget)>) -> usize {
+        let mut added = 0;
+        for (ev, target) in choices {
+            let uid = ev.uid.clone();
+            let mut meeting = ev.meeting;
+            meeting.source = uid.clone();
+            let semester = meeting.date.map(|d| self.settings.semester_of(d));
+            let list = match target {
+                ImportTarget::Ignore => {
+                    if !self.ignored_imports.contains(&uid) {
+                        self.ignored_imports.push(uid);
+                    }
+                    continue;
+                }
+                ImportTarget::Calendar => {
+                    self.entries.push(CalEntry { title: ev.title, meeting });
+                    added += 1;
+                    self.ignored_imports.retain(|u| *u != uid);
+                    continue;
+                }
+                ImportTarget::Student(id, role) => self.student_mut(id).and_then(|s| match role {
+                    MeetingRole::Tcc => s.tcc.as_mut().map(|t| &mut t.meetings),
+                    MeetingRole::Ic => s.ic.as_mut().map(|ic| &mut ic.meetings),
+                    MeetingRole::Pos => s.pos.as_mut().map(|p| &mut p.meetings),
+                    MeetingRole::Advisee => s.advisee.as_mut().map(|a| match semester {
+                        Some(Semester::S2) => &mut a.s2.meetings,
+                        _ => &mut a.s1.meetings,
+                    }),
+                }),
+            };
+            if let Some(list) = list {
+                list.push(meeting);
+                added += 1;
+                self.ignored_imports.retain(|u| *u != uid);
+            }
+        }
+        added
     }
 
     pub fn enrollment_taken(&self, enrollment: &str, except: Option<Uuid>) -> bool {
@@ -2046,15 +2622,22 @@ impl Database {
                 .any(|s| Some(s.id) != except && s.enrollment.trim().eq_ignore_ascii_case(b))
     }
 
-    /// Every dated item across all active (non-archived) students, including
-    /// cancelled weeks of repeating meetings.
+    /// Every dated item across all active (non-archived) students and the
+    /// imported events, including cancelled weeks of repeating meetings.
     pub fn events(&self) -> Vec<Event> {
         let mut out = Vec::new();
         for s in self.students.iter().filter(|s| !s.archived) {
             self.student_events(s, &mut out);
         }
+        self.entry_events(&mut out);
         out.sort_by_key(|e| (e.date, e.time));
         out
+    }
+
+    fn entry_events(&self, out: &mut Vec<Event>) {
+        for x in &self.entries {
+            push_meeting(out, &self.settings, Uuid::nil(), &x.meeting, EventKind::Other, x.title.clone());
+        }
     }
 
     fn student_events(&self, s: &Student, out: &mut Vec<Event>) {
@@ -2062,7 +2645,7 @@ impl Database {
         let name = s.display_name();
         if let Some(tcc) = &s.tcc {
             for m in &tcc.meetings {
-                push_meeting(out, settings, s, m, EventKind::TccMeeting, format!("Orientação de TCC – {name}"));
+                push_meeting(out, settings, s.id, m, EventKind::TccMeeting, format!("Orientação de TCC – {name}"));
             }
             if let Some(date) = tcc.defense {
                 out.push(Event {
@@ -2096,12 +2679,12 @@ impl Database {
         }
         if let Some(ic) = &s.ic {
             for m in &ic.meetings {
-                push_meeting(out, settings, s, m, EventKind::IcMeeting, format!("Orientação de IC – {name}"));
+                push_meeting(out, settings, s.id, m, EventKind::IcMeeting, format!("Orientação de IC – {name}"));
             }
             for step in ic.steps() {
                 push_step(out, s, "ic", "IC", &step, &name);
             }
-            if let Some(end) = ic.grant.end() {
+            if let Some(end) = ic.grant_end() {
                 out.push(Event::dated(
                     format!("ic-grant-end-{}", s.id),
                     s.id,
@@ -2115,6 +2698,10 @@ impl Database {
         if let Some(p) = &s.placement {
             for (i, v) in p.visits.iter().enumerate() {
                 if let Some(date) = v.date {
+                    let mut title = format!("Visita de estágio {} ({}) – {name}", i + 1, v.mode.label().to_lowercase());
+                    if !p.company.trim().is_empty() {
+                        title.push_str(&format!(" @ {}", p.company.trim()));
+                    }
                     out.push(Event {
                         time: v.time,
                         online: v.mode == VisitMode::Online,
@@ -2123,14 +2710,7 @@ impl Database {
                             VisitMode::Online => String::new(),
                             VisitMode::FaceToFace => p.company.trim().into(),
                         },
-                        ..Event::dated(
-                            visit_uid(s.id, i),
-                            s.id,
-                            date,
-                            EventKind::Visit,
-                            format!("Visita de estágio {} ({}) – {name} @ {}", i + 1, v.mode.label().to_lowercase(), p.company),
-                            v.completed,
-                        )
+                        ..Event::dated(visit_uid(s.id, i), s.id, date, EventKind::Visit, title, v.completed)
                     });
                 }
             }
@@ -2155,7 +2735,7 @@ impl Database {
                     push_meeting(
                         out,
                         settings,
-                        s,
+                        s.id,
                         m,
                         EventKind::AdviseeMeeting,
                         format!("Tutoria {sem} ({label}) – {name}"),
@@ -2168,7 +2748,7 @@ impl Database {
     fn pos_events(&self, s: &Student, p: &PosRecord, name: &str, out: &mut Vec<Event>) {
         let level = p.level.short();
         for m in &p.meetings {
-            push_meeting(out, &self.settings, s, m, EventKind::PosMeeting, format!("Orientação ({level}) – {name}"));
+            push_meeting(out, &self.settings, s.id, m, EventKind::PosMeeting, format!("Orientação ({level}) – {name}"));
         }
         if let Some(date) = p.defense {
             out.push(Event {
@@ -2190,7 +2770,7 @@ impl Database {
         for step in p.steps() {
             push_step(out, s, "pos", level, &step, name);
         }
-        if let Some(end) = p.grant.end() {
+        if let Some(end) = p.grant_end() {
             out.push(Event::dated(
                 format!("pos-grant-end-{}", s.id),
                 s.id,
@@ -2219,7 +2799,7 @@ impl Database {
             }
         };
         match (event.kind, &s.placement) {
-            (EventKind::Deadline | EventKind::Reminder, _) => {}
+            (EventKind::Deadline | EventKind::Reminder | EventKind::Other, _) => {}
             (EventKind::Visit, Some(p)) => {
                 let email = if s.email.trim().is_empty() {
                     &p.professional_email
@@ -2227,12 +2807,8 @@ impl Database {
                     &s.email
                 };
                 add(&s.name, email);
-                let visit = p
-                    .visits
-                    .iter()
-                    .enumerate()
-                    .find(|(i, _)| visit_uid(s.id, *i) == event.uid);
-                if let Some((_, v)) = visit
+                let visit = event.visit_index().and_then(|i| p.visits.get(i));
+                if let Some(v) = visit
                     && v.line_manager_attending != TriState::No
                 {
                     add(&p.line_manager_name, &p.line_manager_email);
@@ -2249,15 +2825,19 @@ impl Database {
     pub fn cal_items(&self, pick: impl Fn(&Event) -> bool, as_series: bool) -> Vec<CalItem> {
         let mut out = Vec::new();
         let mut series_done = HashSet::new();
-        for s in self.students.iter().filter(|s| !s.archived) {
+        let students = self.students.iter().filter(|s| !s.archived).map(Some);
+        for s in students.chain([None]) {
             let mut events = Vec::new();
-            self.student_events(s, &mut events);
+            match s {
+                Some(s) => self.student_events(s, &mut events),
+                None => self.entry_events(&mut events),
+            }
             for e in events.into_iter().filter(|e| !e.cancelled && pick(e)) {
-                let attendees = Self::attendees(s, &e);
+                let attendees = s.map(|s| Self::attendees(s, &e)).unwrap_or_default();
                 match &e.series {
                     Some((uid, _)) if as_series => {
                         if series_done.insert(uid.clone())
-                            && let Some(item) = self.series_item(s, uid, e.clone(), attendees)
+                            && let Some(item) = self.series_item(uid, e.clone(), attendees)
                         {
                             out.push(item);
                         }
@@ -2275,14 +2855,8 @@ impl Database {
     }
 
     /// The whole repeating meeting `uid`, from the event of one of its weeks.
-    fn series_item(
-        &self,
-        s: &Student,
-        uid: &str,
-        week: Event,
-        attendees: Vec<Attendee>,
-    ) -> Option<CalItem> {
-        let m = s.meetings().find(|m| m.uid() == uid)?;
+    fn series_item(&self, uid: &str, week: Event, attendees: Vec<Attendee>) -> Option<CalItem> {
+        let m = self.meetings_of(week.student_id).find(|m| m.uid() == uid)?;
         let repeat = m.repeat.as_ref()?;
         let occurrences = m.occurrences(&self.settings);
         let last = occurrences.last()?.planned;
@@ -2309,18 +2883,21 @@ impl Database {
     }
 
     /// The meeting (whole series if it repeats), visit or defence `uid` of
-    /// one student, ready for an invite file.
+    /// one student (or, for the nil id, an imported event), ready for an
+    /// invite file or Google Agenda.
     pub fn invite(&self, student_id: Uuid, uid: &str) -> Option<CalItem> {
-        let s = self.student(student_id)?;
+        let s = if student_id.is_nil() { None } else { Some(self.student(student_id)?) };
         let mut events = Vec::new();
-        self.student_events(s, &mut events);
+        match s {
+            Some(s) => self.student_events(s, &mut events),
+            None => self.entry_events(&mut events),
+        }
         let e = events.into_iter().find(|e| {
-            !matches!(e.kind, EventKind::Deadline | EventKind::Reminder)
-                && (e.uid == uid || e.series.as_ref().is_some_and(|(series, _)| series == uid))
+            e.editable() && (e.uid == uid || e.series.as_ref().is_some_and(|(series, _)| series == uid))
         })?;
-        let attendees = Self::attendees(s, &e);
+        let attendees = s.map(|s| Self::attendees(s, &e)).unwrap_or_default();
         match e.series.as_ref().map(|(series, _)| series.clone()) {
-            Some(series) => self.series_item(s, &series, e, attendees),
+            Some(series) => self.series_item(&series, e, attendees),
             None => Some(CalItem {
                 event: e,
                 series: None,
@@ -2338,6 +2915,7 @@ impl Database {
                     student_id: s.id,
                     severity,
                     message: format!("{} – {message}", s.display_name()),
+                    detail: message,
                 })
             };
             if let Some(tcc) = &s.tcc {
@@ -2362,7 +2940,7 @@ impl Database {
             }
             if let Some(ic) = &s.ic {
                 step_attention(ic.steps(), today, |sev, msg| push(sev, format!("IC: {msg}")));
-                grant_attention(&ic.grant, today, |sev, msg| push(sev, format!("IC: {msg}")));
+                grant_attention(&ic.grant, ic.grant_end(), today, |sev, msg| push(sev, format!("IC: {msg}")));
             }
             if let Some(p) = &s.placement {
                 for (i, v) in p.visits.iter().enumerate() {
@@ -2395,7 +2973,7 @@ impl Database {
             }
             if let Some(p) = s.pos.as_ref().filter(|p| p.status.active()) {
                 step_attention(p.steps(), today, &mut push);
-                grant_attention(&p.grant, today, &mut push);
+                grant_attention(&p.grant, p.grant_end(), today, &mut push);
             }
             if let Some(a) = &s.advisee {
                 for (sem, c) in [("1º sem.", &a.s1), ("2º sem.", &a.s2)] {
@@ -2758,7 +3336,8 @@ mod tests {
         );
         // CAPES: 48 months for a doctorate, ending the day before.
         assert_eq!(p.grant.months, 48);
-        assert_eq!(p.grant.end(), Some(d(2030, 2, 28)));
+        assert_eq!(p.grant_end(), Some(d(2030, 2, 28)));
+        assert_eq!(p.grant.start, None, "the grant starts at enrolment");
         assert_eq!(p.year_of_study(d(2026, 2, 28)), None);
         assert_eq!(p.year_of_study(d(2027, 3, 1)), Some(2));
 
@@ -2766,7 +3345,7 @@ mod tests {
         let mut q = p.clone();
         q.grant.extension_months = 6;
         q.extension_months = 6;
-        assert_eq!(q.grant.end(), Some(d(2030, 8, 31)));
+        assert_eq!(q.grant_end(), Some(d(2030, 8, 31)));
         assert_eq!(q.rule_deadline(&LevelRule::default_for(q.level)), Some(d(2030, 9, 1)));
 
         // Dates already set are kept.
@@ -2847,7 +3426,7 @@ mod tests {
         ic.suggest();
         assert_eq!(ic.partial_report.deadline, Some(d(2027, 3, 1)));
         assert_eq!(ic.final_report.deadline, Some(d(2027, 8, 31)));
-        assert_eq!(ic.grant.end(), Some(d(2027, 8, 31)));
+        assert_eq!(ic.grant_end(), Some(d(2027, 8, 31)));
         assert_eq!(ic.next_step().map(|s| s.label), Some("Relatório parcial".into()));
 
         let db = Database {
@@ -2968,5 +3547,293 @@ mod tests {
                 "Estagiário Exemplo – termo de compromisso de estágio termina em 10/11/2026",
             ]
         );
+    }
+
+    #[test]
+    fn calendar_edits_moves_and_deletes() {
+        let at = |h| NaiveTime::from_hms_opt(h, 0, 0);
+        let one_off = Meeting {
+            date: Some(d(2026, 10, 5)),
+            time: at(14),
+            location: "Sala 201".into(),
+            ..Default::default()
+        };
+        let weekly = Meeting {
+            date: Some(d(2026, 10, 6)),
+            time: at(10),
+            repeat: Some(Repeat {
+                until: Some(d(2026, 11, 3)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut placement = PlacementRecord::default();
+        placement.add_visit();
+        placement.visits[2].date = Some(d(2026, 11, 2));
+        placement.visits[2].time = at(11);
+        let mut db = Database::default();
+        db.students.push(Student {
+            tcc: Some(TccRecord {
+                meetings: vec![one_off.clone(), weekly.clone()],
+                defense: Some(d(2026, 12, 1)),
+                ..Default::default()
+            }),
+            placement: Some(placement),
+            pos: Some(PosRecord {
+                defense: Some(d(2026, 10, 7)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let id = db.students[0].id;
+        let find = |db: &Database, uid: &str| db.events().into_iter().find(|e| e.uid == uid);
+
+        // Edit a one-off meeting: day, time and place.
+        let e = find(&db, &one_off.uid()).unwrap();
+        let mut details = db.event_details(&e).unwrap();
+        assert_eq!(details.title, None);
+        assert_eq!(details.place.as_ref().unwrap().location, "Sala 201");
+        details.date = d(2026, 10, 8);
+        details.time = at(9);
+        details.place = Some(Place {
+            online: Some(true),
+            platform: Platform::GoogleMeet,
+            link: " meet.google.com/abc-defg-hij ".into(),
+            location: "Sala 201".into(),
+        });
+        assert!(db.edit_event(&e, &details));
+        let e = find(&db, &one_off.uid()).unwrap();
+        assert_eq!((e.date, e.time, e.online, e.platform), (d(2026, 10, 8), at(9), true, Platform::GoogleMeet));
+        assert_eq!(e.link, "meet.google.com/abc-defg-hij");
+
+        // Drag a week of a repeating meeting: only that week moves, keeping its time.
+        let week = find(&db, &weekly.occurrence_uid(d(2026, 10, 13))).unwrap();
+        assert!(db.move_event(&week, d(2026, 10, 14)));
+        let week = find(&db, &weekly.occurrence_uid(d(2026, 10, 13))).unwrap();
+        assert!(week.moved());
+        assert_eq!((week.date, week.time), (d(2026, 10, 14), at(10)));
+        // Back on its day it's no longer a change.
+        assert!(db.move_event(&week, d(2026, 10, 13)));
+        let m = &db.students[0].tcc.as_ref().unwrap().meetings[1];
+        assert!(m.repeat.as_ref().unwrap().exceptions.is_empty());
+
+        // Delete one week (cancelled, then restored), then the whole series.
+        let week = find(&db, &weekly.occurrence_uid(d(2026, 10, 20))).unwrap();
+        assert!(db.delete_event(&week, false));
+        assert!(find(&db, &weekly.occurrence_uid(d(2026, 10, 20))).unwrap().cancelled);
+        assert!(db.change_meeting(&week, MeetingChange::Cancelled(false)));
+        assert!(!find(&db, &weekly.occurrence_uid(d(2026, 10, 20))).unwrap().cancelled);
+        assert!(db.delete_event(&week, true));
+        assert!(find(&db, &weekly.occurrence_uid(d(2026, 10, 27))).is_none());
+        assert_eq!(db.students[0].meetings().count(), 1);
+
+        // The third visit and the defences move and lose their date;
+        // deadlines can't be touched.
+        let visit = find(&db, &visit_uid(id, 2)).unwrap();
+        assert!(db.move_event(&visit, d(2026, 11, 4)));
+        assert_eq!(find(&db, &visit_uid(id, 2)).unwrap().time, at(11));
+        let defense = find(&db, &format!("pos-defense-{id}")).unwrap();
+        let mut details = db.event_details(&defense).unwrap();
+        details.place.as_mut().unwrap().location = "Auditório 5".into();
+        assert!(db.edit_event(&defense, &details));
+        assert_eq!(db.students[0].pos.as_ref().unwrap().defense_location, "Auditório 5");
+        let tcc_defense = find(&db, &format!("tcc-defense-{id}")).unwrap();
+        assert!(db.move_event(&tcc_defense, d(2026, 12, 3)));
+        assert_eq!(db.students[0].tcc.as_ref().unwrap().defense, Some(d(2026, 12, 3)));
+        assert!(db.delete_event(&visit, false) && db.delete_event(&defense, false));
+        assert!(find(&db, &visit_uid(id, 2)).is_none() && find(&db, &format!("pos-defense-{id}")).is_none());
+        assert_eq!(db.students[0].placement.as_ref().unwrap().visits.len(), 3, "the visit itself stays");
+        let deadline = Event {
+            uid: "cw-x".into(),
+            kind: EventKind::Deadline,
+            ..defense
+        };
+        assert!(!deadline.editable() && db.event_details(&deadline).is_none());
+        assert!(!db.delete_event(&deadline, true));
+    }
+
+    #[test]
+    fn importing_events() {
+        let mut db = Database::default();
+        db.settings.sem2_start = Some(d(2027, 8, 2));
+        db.students.push(Student {
+            name: "Ana Souza".into(),
+            email: "ana.souza@exemplo.edu.br".into(),
+            pos: Some(PosRecord::default()),
+            advisee: Some(AdviseeRecord::default()),
+            ..Default::default()
+        });
+        db.students.push(Student {
+            name: "Bruno Lima".into(),
+            tcc: Some(TccRecord::default()),
+            ic: Some(IcRecord::new()),
+            ..Default::default()
+        });
+        let (ana, bruno) = (db.students[0].id, db.students[1].id);
+        let event = |uid: &str, title: &str, date, guests: &[&str]| ImportedEvent {
+            uid: uid.into(),
+            title: title.into(),
+            meeting: Meeting {
+                date: Some(date),
+                ..Default::default()
+            },
+            guests: guests.iter().map(|g| g.to_string()).collect(),
+            repeat_dropped: false,
+        };
+        // The student is found by a guest's address or by name in the title.
+        let chat = event("a", "Conversa", d(2026, 11, 3), &["Ana.Souza@exemplo.edu.br"]);
+        assert_eq!(db.suggest_student(&chat), Some((ana, MeetingRole::Pos)));
+        let tutoria = event("b", "Tutoria – Ana Souza", d(2027, 9, 1), &[]);
+        assert_eq!(db.suggest_student(&tutoria), Some((ana, MeetingRole::Advisee)));
+        let ic = event("c", "bruno lima – orientação de IC", d(2026, 11, 4), &[]);
+        assert_eq!(db.suggest_student(&ic), Some((bruno, MeetingRole::Ic)));
+        let other = event("c2", "Bruno Lima", d(2026, 11, 4), &[]);
+        assert_eq!(db.suggest_student(&other), Some((bruno, MeetingRole::Tcc)), "the first role");
+        let dentist = event("d", "Dentista", d(2026, 11, 5), &[]);
+        assert_eq!(db.suggest_student(&dentist), None);
+        let skipped = event("e", "Seminário", d(2026, 11, 6), &[]);
+
+        let added = db.import(vec![
+            (chat, ImportTarget::Student(ana, MeetingRole::Pos)),
+            (tutoria, ImportTarget::Student(ana, MeetingRole::Advisee)),
+            (ic, ImportTarget::Student(bruno, MeetingRole::Ic)),
+            (dentist, ImportTarget::Calendar),
+            (skipped, ImportTarget::Ignore),
+        ]);
+        assert_eq!(added, 4);
+        let s = &db.students[0];
+        assert_eq!(s.pos.as_ref().unwrap().meetings[0].source, "a");
+        assert_eq!(s.advisee.as_ref().unwrap().s2.meetings.len(), 1, "September is semester 2");
+        assert_eq!(db.students[1].ic.as_ref().unwrap().meetings.len(), 1);
+        assert_eq!(db.entries[0].title, "Dentista");
+        let other = db.events().into_iter().find(|e| e.kind == EventKind::Other).unwrap();
+        assert_eq!((other.title.as_str(), other.student_id), ("Dentista", Uuid::nil()));
+        assert_eq!(db.cal_items(|e| e.kind == EventKind::Other, true).len(), 1);
+
+        // Seen again: imported, skipped, or exported by the app itself.
+        assert_eq!(db.known_import("a"), Some(Known::Imported));
+        assert_eq!(db.known_import("d"), Some(Known::Imported));
+        assert_eq!(db.known_import("e"), Some(Known::Skipped));
+        assert_eq!(db.known_import("meeting-x@supervisor-br.local"), Some(Known::FromSupervisor));
+        assert!(Known::Imported.duplicate() && Known::FromSupervisor.duplicate() && !Known::Skipped.duplicate());
+        assert_eq!(db.known_import("new"), None);
+
+        // An imported event can be renamed, and deleted.
+        let mut details = db.event_details(&other).unwrap();
+        details.title = Some("Dentista (remarcado)".into());
+        assert!(db.edit_event(&other, &details));
+        assert_eq!(db.entries[0].title, "Dentista (remarcado)");
+        assert!(db.delete_event(&other, false));
+        assert!(db.entries.is_empty());
+    }
+
+    #[test]
+    fn weeks_start_on_sunday_or_monday() {
+        let mut settings = Settings::default();
+        assert!(settings.week_starts_sunday, "Sunday, as usual in Brazil");
+        // Wednesday 28 October 2026, and a Sunday.
+        assert_eq!(settings.week_start(d(2026, 10, 28)), d(2026, 10, 25));
+        assert_eq!(settings.week_start(d(2026, 11, 1)), d(2026, 11, 1));
+        settings.week_starts_sunday = false;
+        assert_eq!(settings.week_start(d(2026, 10, 28)), d(2026, 10, 26));
+        assert_eq!(settings.week_start(d(2026, 11, 1)), d(2026, 10, 26));
+        // Files from before the option start on Sunday too.
+        let old: Settings = serde_json::from_str(r#"{"academic_year": "2026"}"#).unwrap();
+        assert!(old.week_starts_sunday);
+    }
+
+    #[test]
+    fn anonymous_titles_leave_out_the_student() {
+        let event = |student_id, title: &str| Event::dated(String::new(), student_id, d(2026, 10, 1), EventKind::Visit, title.into(), false);
+        let id = Uuid::new_v4();
+        assert_eq!(event(id, "Orientação de TCC – Bruno").anonymous_title(), "Orientação de TCC");
+        assert_eq!(
+            event(id, "Visita de estágio 1 (on-line) – Bruno @ Empresa – Filial").anonymous_title(),
+            "Visita de estágio 1 (on-line)"
+        );
+        assert_eq!(event(id, "TCC I: Projeto de TCC – Bruno").anonymous_title(), "TCC I: Projeto de TCC");
+        assert_eq!(event(Uuid::nil(), "Almoço com a Ana").anonymous_title(), "Evento");
+
+        let db = Database {
+            students: vec![Student {
+                name: "Aluno Exemplo".into(),
+                tcc: Some(TccRecord::default()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let a = &db.attention(d(2026, 10, 1))[0];
+        assert_eq!(a.message, "Aluno Exemplo – TCC: ainda sem contato inicial");
+        assert_eq!(a.detail, "TCC: ainda sem contato inicial");
+    }
+
+    #[test]
+    fn grant_end_can_be_typed_in_or_follow_the_final_deadline() {
+        let mut p = PosRecord {
+            start: Some(d(2026, 3, 1)),
+            ..PosRecord::new(Level::MestradoAcademico)
+        };
+        p.grant.agency = "CAPES".into();
+        p.grant.months = 24;
+        assert_eq!(p.grant_end(), Some(d(2028, 2, 29)), "from enrolment");
+        p.grant.start = Some(d(2026, 4, 1));
+        assert_eq!(p.grant_end(), Some(d(2028, 3, 31)), "its own start wins");
+        p.grant.end_override = Some(d(2028, 6, 30));
+        assert_eq!(p.grant_end(), Some(d(2028, 6, 30)));
+        assert_eq!(p.grant.calculated_end(p.start), Some(d(2028, 3, 31)));
+
+        // Linked to the final deadline: it ends then, once there is one.
+        p.grant.until_final = true;
+        assert_eq!(p.grant_end(), Some(d(2028, 6, 30)), "no final deadline yet");
+        p.final_deadline.deadline = Some(d(2028, 8, 15));
+        assert_eq!(p.grant_end(), Some(d(2028, 8, 15)));
+        let db = Database {
+            students: vec![Student {
+                name: "Mestranda Exemplo".into(),
+                pos: Some(p.clone()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(db.events().iter().any(|e| e.uid.starts_with("pos-grant-end-") && e.date == d(2028, 8, 15)));
+        assert!(db.attention(d(2028, 7, 1)).iter().any(|a| a.detail == "bolsa CAPES termina em 15/08/2028"));
+        p.grant.agency.clear();
+        assert_eq!(p.grant_end(), None, "no grant, no end");
+
+        // IC: a typed-in end moves the suggested reports.
+        let mut ic = IcRecord::new();
+        ic.grant.start = Some(d(2026, 9, 1));
+        ic.grant.end_override = Some(d(2027, 6, 30));
+        ic.suggest();
+        assert_eq!(ic.grant_end(), Some(d(2027, 6, 30)));
+        assert_eq!(ic.final_report.deadline, Some(d(2027, 6, 30)));
+        assert_eq!(ic.partial_report.deadline, Some(d(2027, 1, 30)));
+    }
+
+    #[test]
+    fn placements_have_as_many_visits_as_needed() {
+        // Older files have exactly two.
+        let old: PlacementRecord = serde_json::from_str(r#"{"company": "Empresa", "visits": [{}, {"mode": "FaceToFace"}]}"#).unwrap();
+        assert_eq!(old.visits.len(), 2);
+        let mut p = PlacementRecord::default();
+        p.add_visit();
+        assert_eq!(p.visits[2].mode, VisitMode::Online, "after an in-person visit");
+        p.visits.remove(0);
+        p.visits[1].date = Some(d(2026, 11, 2));
+        p.visits[1].request_sent = Some(d(2026, 10, 1));
+        let db = Database {
+            students: vec![Student {
+                name: "Estagiária Exemplo".into(),
+                placement: Some(p),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let id = db.students[0].id;
+        let visit = db.events().into_iter().find(|e| e.kind == EventKind::Visit).unwrap();
+        assert_eq!(visit.uid, visit_uid(id, 1));
+        assert_eq!(visit.title, "Visita de estágio 2 (on-line) – Estagiária Exemplo");
+        assert!(db.invite(id, &visit.uid).is_some());
+        assert!(db.attention(d(2026, 10, 25)).iter().any(|a| a.detail == "visita 2 de estágio: aguardando resposta"));
     }
 }

@@ -37,6 +37,19 @@ fn first_of_month(date: NaiveDate) -> NaiveDate {
     date.with_day(1).unwrap_or(date)
 }
 
+/// Where the date picker finds the first day of the week.
+const WEEK_START_KEY: &str = "week-starts-sunday";
+
+/// Make the date pickers start the week as Settings say; called every frame.
+pub fn set_week_start(ctx: &egui::Context, sunday_first: bool) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(WEEK_START_KEY), sunday_first));
+}
+
+/// Whether the date pickers start the week on Sunday (the default in Brazil).
+fn sunday_first(ui: &Ui) -> bool {
+    ui.data(|d| d.get_temp(egui::Id::unique(WEEK_START_KEY))).unwrap_or(true)
+}
+
 /// A button showing `date` that opens a month calendar; clicking a day
 /// picks it. Days are labelled in full ("ter, 03 nov 2026") for screen readers.
 pub fn date_picker(ui: &mut Ui, date: &mut NaiveDate) -> egui::Response {
@@ -130,12 +143,18 @@ fn month_grid(ui: &mut Ui, st: &mut PickerState, selected: NaiveDate) -> Option<
         }
     });
     ui.spacing_mut().item_spacing = egui::vec2(DAY_GAP, DAY_GAP);
+    let sunday = sunday_first(ui);
     ui.horizontal(|ui| {
-        for d in pt::WEEKDAY_INITIALS {
+        for d in pt::weekday_initials(sunday) {
             ui.add_sized(DAY, egui::Label::new(RichText::new(d).small().color(theme::muted(ui))));
         }
     });
-    let first = st.month - Duration::days(i64::from(st.month.weekday().num_days_from_monday()));
+    let back = if sunday {
+        st.month.weekday().num_days_from_sunday()
+    } else {
+        st.month.weekday().num_days_from_monday()
+    };
+    let first = st.month - Duration::days(i64::from(back));
     let today = today();
     // The theme's padding would make two-digit days wider than the cell.
     ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
@@ -289,12 +308,39 @@ pub fn field_label(ui: &mut Ui, text: &str) {
     ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Wrap));
 }
 
-/// Button for saving an invite file; needs a date to be set.
-pub fn invite_button(ui: &mut Ui, has_date: bool) -> bool {
-    ui.add_enabled(has_date, egui::Button::new(format!("{} Convite…", icons::PAPER_PLANE_TILT)).small())
-        .on_hover_text("Salva um .ics com o aluno como convidado, para importar no Outlook ou no Google Agenda e enviar")
+/// A meeting, visit or defence (by UID) to send to the student.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Share {
+    /// Save an invite file.
+    File(String),
+    /// Open it in Google Agenda.
+    Google(String),
+}
+
+/// "Convite…" and "Google Agenda" buttons for the item `uid`; both need a
+/// date to be set.
+pub fn share_buttons(ui: &mut Ui, has_date: bool, uid: impl Fn() -> String) -> Option<Share> {
+    let mut share = None;
+    if ui
+        .add_enabled(has_date, egui::Button::new(format!("{} Google Agenda", icons::ARROW_SQUARE_OUT)).small())
+        .on_hover_text(
+            "Abre o Google Agenda no navegador com o evento preenchido e o aluno como convidado. \
+             No Google Meet sem link, o Google cria um. Confira e clique em Salvar para enviar o convite.",
+        )
         .on_disabled_hover_text("Defina uma data primeiro")
         .clicked()
+    {
+        share = Some(Share::Google(uid()));
+    }
+    if ui
+        .add_enabled(has_date, egui::Button::new(format!("{} Convite…", icons::PAPER_PLANE_TILT)).small())
+        .on_hover_text("Salva um .ics com o aluno como convidado, para importar no Outlook e enviar")
+        .on_disabled_hover_text("Defina uma data primeiro")
+        .clicked()
+    {
+        share = Some(Share::File(uid()));
+    }
+    share
 }
 
 /// "S5 · seg, 26 out" style label for a date (S = semana letiva).
@@ -307,15 +353,15 @@ pub fn week_label(settings: &Settings, date: NaiveDate) -> String {
 
 /// Editable list of meetings: date, time, online (Meet, Teams, Zoom, RNP) or
 /// room, repetition and notes. `first_label` names the first entry (e.g.
-/// "Reunião do semestre"); later entries become follow-ups. Returns the UID
-/// of a meeting whose invite button was clicked.
+/// "Reunião do semestre"); later entries become follow-ups. Returns the
+/// meeting to send, if its invite or Google Agenda button was clicked.
 pub fn meetings_editor(
     ui: &mut Ui,
     salt: impl AsIdSalt,
     meetings: &mut Vec<Meeting>,
     first_label: Option<&str>,
     settings: &Settings,
-) -> Option<String> {
+) -> Option<Share> {
     let mut invite = None;
     ui.push_id(salt, |ui| {
         let mut remove = None;
@@ -339,9 +385,6 @@ pub fn meetings_editor(
                             if ui.small_button(icons::TRASH).on_hover_text("Remover reunião").clicked() {
                                 remove = Some(i);
                             }
-                            if invite_button(ui, m.date.is_some()) {
-                                invite = Some(m.uid());
-                            }
                         });
                     });
                     ui.horizontal_wrapped(|ui| {
@@ -349,6 +392,12 @@ pub fn meetings_editor(
                         opt_time(ui, "time", &mut m.time);
                         if m.repeat.is_none() {
                             ui.checkbox(&mut m.held, "Realizada");
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Convidar").small().color(theme::muted(ui)));
+                        if let Some(share) = share_buttons(ui, m.date.is_some(), || m.uid()) {
+                            invite = Some(share);
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
@@ -365,7 +414,7 @@ pub fn meetings_editor(
                             ui.label(RichText::new(icons::LINK).color(theme::muted(ui)));
                             let hint = match m.platform {
                                 Platform::Teams => "Link da reunião (opcional; senão, o das Configurações)",
-                                Platform::GoogleMeet => "https://meet.google.com/…",
+                                Platform::GoogleMeet => "meet.google.com/… (vazio: o Google Agenda cria um)",
                                 Platform::Zoom => "https://…zoom.us/j/…",
                                 Platform::Rnp => "https://conferenciaweb.rnp.br/…",
                             };
@@ -375,6 +424,12 @@ pub fn meetings_editor(
                             text_field(ui, &mut m.location, "Sala / local");
                         }
                     });
+                    if m.online && !m.link.trim().is_empty() && !crate::ics::valid_link(&m.link) {
+                        ui.colored_label(
+                            theme::fg(ui, theme::AMBER),
+                            format!("{} Isto não parece um link – ele não vai nos convites", icons::WARNING),
+                        );
+                    }
                     repeat_editor(ui, m, settings);
                     notes(ui, &mut m.notes, "Anotações da reunião…");
                 });

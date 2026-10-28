@@ -33,6 +33,26 @@ pub const MONTHS: [&str; 12] = [
     "dezembro",
 ];
 
+/// `days` (listed from Monday) in the order a calendar shows them: from
+/// Sunday, as usual in Brazil, or from Monday.
+fn week_order(days: [&'static str; 7], sunday_first: bool) -> [&'static str; 7] {
+    let mut out = days;
+    if sunday_first {
+        out.rotate_right(1);
+    }
+    out
+}
+
+/// Short weekday names for the columns of a calendar.
+pub fn weekdays_short(sunday_first: bool) -> [&'static str; 7] {
+    week_order(WEEKDAYS_SHORT, sunday_first)
+}
+
+/// Weekday initials for the columns of a small month grid.
+pub fn weekday_initials(sunday_first: bool) -> [&'static str; 7] {
+    week_order(WEEKDAY_INITIALS, sunday_first)
+}
+
 fn wd(d: NaiveDate) -> usize {
     d.weekday().num_days_from_monday() as usize
 }
@@ -116,5 +136,8 @@ mod tests {
         assert_eq!(month_year(s), "Março de 2026");
         assert_eq!(count(1, "aluno", "alunos"), "1 aluno");
         assert_eq!(count(0, "aluno", "alunos"), "0 alunos");
+        assert_eq!(weekdays_short(true), ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"]);
+        assert_eq!(weekdays_short(false)[0], "seg");
+        assert_eq!(weekday_initials(true), ["D", "S", "T", "Q", "Q", "S", "S"]);
     }
 }

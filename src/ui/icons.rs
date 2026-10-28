@@ -5,12 +5,14 @@
 
 pub const ARCHIVE: &str = "\u{E00C}";
 pub const ARROW_RIGHT: &str = "\u{E06C}";
+pub const ARROW_SQUARE_OUT: &str = "\u{E5DE}";
 pub const BELL: &str = "\u{E0CE}";
 pub const BOOK_OPEN_TEXT: &str = "\u{E8F2}";
 pub const BUILDINGS: &str = "\u{E102}";
 pub const CALENDAR_BLANK: &str = "\u{E10A}";
 pub const CALENDAR_CHECK: &str = "\u{E712}";
 pub const CALENDAR_DOTS: &str = "\u{E7B4}";
+pub const CARET_DOWN: &str = "\u{E136}";
 pub const CARET_LEFT: &str = "\u{E138}";
 pub const CARET_RIGHT: &str = "\u{E13A}";
 pub const COINS: &str = "\u{E78E}";
@@ -19,6 +21,7 @@ pub const CHECK: &str = "\u{E182}";
 pub const CHECK_CIRCLE: &str = "\u{E184}";
 pub const CLOCK: &str = "\u{E19A}";
 pub const DESKTOP: &str = "\u{E560}";
+pub const DOWNLOAD_SIMPLE: &str = "\u{E20C}";
 pub const FLOPPY_DISK: &str = "\u{E248}";
 pub const EYE: &str = "\u{E220}";
 pub const EYE_SLASH: &str = "\u{E224}";
@@ -35,6 +38,7 @@ pub const LOCK_SIMPLE: &str = "\u{E308}";
 pub const MAGNIFYING_GLASS: &str = "\u{E30C}";
 pub const MAP_PIN: &str = "\u{E316}";
 pub const MOON: &str = "\u{E330}";
+pub const PENCIL_SIMPLE: &str = "\u{E3B4}";
 pub const PAPER_PLANE_TILT: &str = "\u{E398}";
 pub const PLUS: &str = "\u{E3D4}";
 pub const PUSH_PIN: &str = "\u{E3E2}";
@@ -50,9 +54,9 @@ pub const X: &str = "\u{E4F6}";
 
 #[cfg(test)]
 pub const ALL: &[&str] = &[
-    ARCHIVE, ARROW_RIGHT, BELL, BOOK_OPEN_TEXT, BUILDINGS, COINS, EYE, EYE_SLASH, FLASK, CALENDAR_BLANK, CALENDAR_CHECK,
-    CALENDAR_DOTS, CARET_LEFT, CARET_RIGHT, CHAT_CIRCLE_TEXT, CHECK, CHECK_CIRCLE, CLOCK,
-    DESKTOP, EXPORT, FLOPPY_DISK, GEAR_SIX, GRADUATION_CAP, HOURGLASS, HOUSE, KEY, LINK, LIST_BULLETS,
-    LOCK_SIMPLE, MAGNIFYING_GLASS, MAP_PIN, MOON, PAPER_PLANE_TILT, PLUS, PUSH_PIN, REPEAT,
+    ARCHIVE, ARROW_RIGHT, ARROW_SQUARE_OUT, BELL, BOOK_OPEN_TEXT, BUILDINGS, COINS, EYE, EYE_SLASH, FLASK, CALENDAR_BLANK, CALENDAR_CHECK,
+    CALENDAR_DOTS, CARET_DOWN, CARET_LEFT, CARET_RIGHT, CHAT_CIRCLE_TEXT, CHECK, CHECK_CIRCLE, CLOCK,
+    DESKTOP, DOWNLOAD_SIMPLE, EXPORT, FLOPPY_DISK, GEAR_SIX, GRADUATION_CAP, HOURGLASS, HOUSE, KEY, LINK, LIST_BULLETS,
+    LOCK_SIMPLE, MAGNIFYING_GLASS, MAP_PIN, MOON, PAPER_PLANE_TILT, PENCIL_SIMPLE, PLUS, PUSH_PIN, REPEAT,
     STUDENT, SUN, TRASH, USERS, USERS_THREE, WARNING, WARNING_CIRCLE, X,
 ];

@@ -3,27 +3,60 @@
 //! in Settings, or added by hand) with their reminders, the defence and
 //! meetings.
 
-use chrono::Months;
+use chrono::{Months, NaiveDate};
 use egui::{RichText, Ui};
 use uuid::Uuid;
 
 use crate::model::{DefenseOutcome, ExtensionReason, Level, Milestone, PosRecord, PosStatus, Settings};
 use crate::pt;
-use crate::ui::steps::{self, combo};
+use crate::ui::steps::{self, GrantOf, combo};
+use crate::ui::widgets::Share;
 use crate::ui::{icons, theme, widgets};
 
-/// Returns the UID of a meeting (or the defence) to save an invite for.
-pub fn show(ui: &mut Ui, p: &mut PosRecord, settings: &Settings, student_id: Uuid) -> Option<String> {
+/// Returns the meeting (or the defence) to send, if asked.
+pub fn show(ui: &mut Ui, p: &mut PosRecord, settings: &Settings, student_id: Uuid) -> Option<Share> {
     let mut invite = None;
     let today = widgets::today();
     details(ui, p);
 
     ui.add_space(10.0);
-    theme::card_title(ui, "Bolsa");
-    steps::grant_editor(ui, "pos-grant", &mut p.grant, Some(p.level));
+    theme::section(ui, "Bolsa", |ui| {
+        let of = GrantOf::Pos {
+            level: p.level,
+            start: p.start,
+            final_deadline: p.final_deadline.deadline,
+        };
+        steps::grant_editor(ui, "pos-grant", &mut p.grant, of);
+    });
 
     ui.add_space(10.0);
-    theme::card_title(ui, "Datas e prazos");
+    theme::section(ui, "Datas e prazos", |ui| dates(ui, p, settings, today));
+
+    ui.add_space(10.0);
+    let title = match p.level {
+        Level::PosDoutorado => "Conclusão",
+        _ => "Defesa e titulação",
+    };
+    theme::section(ui, title, |ui| {
+        if let Some(share) = defense(ui, p, student_id, today) {
+            invite = Some(share);
+        }
+    });
+
+    ui.add_space(10.0);
+    let meetings = match p.level {
+        Level::PosDoutorado => "Reuniões de supervisão",
+        _ => "Reuniões de orientação",
+    };
+    let meetings = theme::section(ui, meetings, |ui| {
+        widgets::meetings_editor(ui, "pos-meetings", &mut p.meetings, None, settings)
+    });
+    invite.or(meetings.flatten())
+}
+
+/// Enrolment, extension, and the deadlines of the course: suggested from
+/// the rules of the level, or added by hand.
+fn dates(ui: &mut Ui, p: &mut PosRecord, settings: &Settings, today: NaiveDate) {
     let rule = settings.rule(p.level);
     widgets::form_grid(ui, "pos-dates", |ui| {
         ui.label("Ingresso");
@@ -158,23 +191,24 @@ pub fn show(ui: &mut Ui, p: &mut PosRecord, settings: &Settings, student_id: Uui
         p.annual_reports.remove(i);
     }
     steps::custom_steps(ui, &mut p.custom_steps, today);
+}
 
-    ui.add_space(10.0);
-    let title = match p.level {
-        Level::PosDoutorado => "Conclusão",
-        _ => "Defesa e titulação",
-    };
-    theme::card_title(ui, title);
+/// The defence, its outcome, the corrected version and the award.
+fn defense(ui: &mut Ui, p: &mut PosRecord, student_id: Uuid, today: NaiveDate) -> Option<Share> {
+    let mut invite = None;
+    let all = p.steps();
     widgets::form_grid(ui, "pos-defense", |ui| {
         if p.level != Level::PosDoutorado {
             ui.label("Data da defesa");
             widgets::opt_date(ui, "defense", &mut p.defense);
             ui.end_row();
             ui.label("Horário");
+            widgets::opt_time(ui, "defense-time", &mut p.defense_time);
+            ui.end_row();
+            ui.label("Convidar");
             ui.horizontal(|ui| {
-                widgets::opt_time(ui, "defense-time", &mut p.defense_time);
-                if widgets::invite_button(ui, p.defense.is_some()) {
-                    invite = Some(format!("pos-defense-{student_id}"));
+                if let Some(share) = widgets::share_buttons(ui, p.defense.is_some(), || format!("pos-defense-{student_id}")) {
+                    invite = Some(share);
                 }
             });
             ui.end_row();
@@ -211,16 +245,6 @@ pub fn show(ui: &mut Ui, p: &mut PosRecord, settings: &Settings, student_id: Uui
         widgets::opt_date(ui, "awarded", &mut p.awarded_on);
         ui.end_row();
     });
-
-    ui.add_space(10.0);
-    let meetings = match p.level {
-        Level::PosDoutorado => "Reuniões de supervisão",
-        _ => "Reuniões de orientação",
-    };
-    theme::card_title(ui, meetings);
-    if let Some(uid) = widgets::meetings_editor(ui, "pos-meetings", &mut p.meetings, None, settings) {
-        invite = Some(uid);
-    }
     invite
 }
 

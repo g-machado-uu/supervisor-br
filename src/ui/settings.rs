@@ -104,7 +104,7 @@ pub fn show(
                 ui.end_row();
             });
             ui.label(
-                RichText::new("Entregas definidas por semana letiva vencem no início daquela semana (segunda-feira, se a semana 1 começa numa segunda). Uma data fixa tem prioridade. Reuniões recorrentes vão até o fim das aulas.")
+                RichText::new("Entregas definidas por semana letiva vencem no início daquela semana (o mesmo dia da semana em que a semana 1 começa). Uma data fixa tem prioridade. Reuniões recorrentes vão até o fim das aulas.")
                     .small()
                     .color(theme::muted(ui)),
             );
@@ -193,11 +193,25 @@ pub fn show(
 
         ui.add_space(8.0);
         theme::card(ui, "Agenda", |ui| {
+            widgets::form_grid(ui, "calendar-grid", |ui| {
+                ui.label("A semana começa no");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut settings.week_starts_sunday, true, "Domingo");
+                    ui.selectable_value(&mut settings.week_starts_sunday, false, "Segunda-feira");
+                });
+                ui.end_row();
+            });
+            ui.label(
+                RichText::new("Vale para a agenda (lista e mês), o mês do painel e o seletor de datas.")
+                    .small()
+                    .color(theme::muted(ui)),
+            );
+            ui.add_space(6.0);
             if ui.button(format!("{} Exportar agenda (.ics)…", icons::EXPORT)).clicked() {
                 action = SettingsAction::ExportIcs;
             }
             ui.label(
-                RichText::new("Exporta reuniões, visitas, defesas e prazos para o Outlook / Google Agenda. O arquivo exportado não é criptografado.")
+                RichText::new("Exporta reuniões, visitas, defesas e prazos para o Outlook / Google Agenda. O arquivo exportado não é criptografado. Para trazer eventos de outra agenda, use “Importar…” na página Agenda.")
                     .small()
                     .color(theme::muted(ui)),
             );

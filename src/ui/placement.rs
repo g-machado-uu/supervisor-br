@@ -1,15 +1,17 @@
 //! Estágio supervisionado section: the company, the internship agreement
-//! (TCE), the report and the two visits.
+//! (TCE), the report and the visits, which can be added, removed and folded.
 
+use egui::collapsing_header::CollapsingState;
 use egui::{RichText, Ui};
 
 use uuid::Uuid;
 
-use crate::model::{PlacementRecord, ReplyStatus, VisitMode, visit_uid};
-use crate::ui::{icons, steps, theme, widgets};
+use crate::model::{PlacementRecord, ReplyStatus, Visit, VisitMode, visit_uid};
+use crate::ui::widgets::Share;
+use crate::ui::{icons, steps, student_list, theme, widgets};
 
-/// Returns the UID of a visit to save an invite for.
-pub fn show(ui: &mut Ui, p: &mut PlacementRecord, student_id: Uuid) -> Option<String> {
+/// Returns the visit to send, if asked.
+pub fn show(ui: &mut Ui, p: &mut PlacementRecord, student_id: Uuid) -> Option<Share> {
     let mut invite = None;
     let today = widgets::today();
     widgets::form_grid(ui, "placement-grid", |ui| {
@@ -55,62 +57,110 @@ pub fn show(ui: &mut Ui, p: &mut PlacementRecord, student_id: Uuid) -> Option<St
         ui.end_row();
     });
 
+    ui.add_space(6.0);
+    let mut remove = None;
     for (i, v) in p.visits.iter_mut().enumerate() {
         ui.add_space(6.0);
         ui.push_id(("visit", i), |ui| {
             widgets::inner_frame(ui).show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                // Each visit folds away; those already made start folded.
+                let id = ui.make_persistent_id("visit-open");
+                let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, !v.completed);
+                let open = state.is_open();
                 ui.horizontal(|ui| {
-                    ui.label(theme::semibold(format!("Visita {}", i + 1)));
-                    if v.completed {
-                        theme::chip(ui, "realizada", theme::GREEN);
+                    let caret = if open { icons::CARET_DOWN } else { icons::CARET_RIGHT };
+                    if ui
+                        .add(egui::Label::new(theme::semibold(format!("{caret} Visita {}", i + 1))).sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(if open { "Recolher" } else { "Mostrar" })
+                        .clicked()
+                    {
+                        state.toggle(ui);
+                    }
+                    if open {
+                        if v.completed {
+                            theme::chip(ui, "realizada", theme::GREEN);
+                        }
+                    } else {
+                        let (text, color) = student_list::visit_status(v);
+                        theme::chip(ui, text, color);
+                        ui.label(RichText::new(v.mode.label()).small().color(theme::muted(ui)));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if widgets::invite_button(ui, v.date.is_some()) {
-                            invite = Some(visit_uid(student_id, i));
+                        if ui.small_button(icons::TRASH).on_hover_text("Remover esta visita").clicked() {
+                            remove = Some(i);
                         }
                     });
                 });
-                widgets::form_grid(ui, "visit-grid", |ui| {
-                    ui.label("Modo");
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut v.mode, VisitMode::Online, format!("{} On-line", icons::DESKTOP));
-                        ui.selectable_value(&mut v.mode, VisitMode::FaceToFace, format!("{} Presencial", icons::BUILDINGS));
-                    });
-                    ui.end_row();
-
-                    ui.label("Pedido enviado");
-                    widgets::opt_date(ui, "request", &mut v.request_sent);
-                    ui.end_row();
-
-                    ui.label("Resposta do aluno");
-                    widgets::reply_status(ui, &mut v.response);
-                    ui.end_row();
-
-                    if v.response == ReplyStatus::Replied {
-                        ui.label("Respondeu em");
-                        widgets::opt_date(ui, "responded", &mut v.responded_on);
-                        ui.end_row();
+                state.show_body_unindented(ui, |ui| {
+                    if let Some(share) = visit(ui, v, || visit_uid(student_id, i)) {
+                        invite = Some(share);
                     }
-
-                    ui.label("Data");
-                    widgets::opt_date(ui, "date", &mut v.date);
-                    ui.end_row();
-                    ui.label("Horário");
-                    widgets::opt_time(ui, "time", &mut v.time);
-                    ui.end_row();
-
-                    widgets::field_label(ui, "Supervisor(a) participa");
-                    widgets::tri_state(ui, &mut v.line_manager_attending);
-                    ui.end_row();
-
-                    ui.label("Realizada");
-                    ui.checkbox(&mut v.completed, "Visita feita");
-                    ui.end_row();
                 });
-                widgets::notes(ui, &mut v.notes, "Anotações da visita…");
             });
         });
     }
+    if let Some(i) = remove {
+        p.visits.remove(i);
+    }
+    ui.add_space(4.0);
+    if ui
+        .button(format!("{} Adicionar visita", icons::PLUS))
+        .on_hover_text("O número de visitas depende do curso e do estágio")
+        .clicked()
+    {
+        p.add_visit();
+    }
+    invite
+}
+
+/// The request, the reply, the day and how it went. Returns the visit
+/// (`uid`) to send, if asked.
+fn visit(ui: &mut Ui, v: &mut Visit, uid: impl Fn() -> String) -> Option<Share> {
+    let mut invite = None;
+    widgets::form_grid(ui, "visit-grid", |ui| {
+        ui.label("Modo");
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut v.mode, VisitMode::Online, format!("{} On-line", icons::DESKTOP));
+            ui.selectable_value(&mut v.mode, VisitMode::FaceToFace, format!("{} Presencial", icons::BUILDINGS));
+        });
+        ui.end_row();
+
+        ui.label("Pedido enviado");
+        widgets::opt_date(ui, "request", &mut v.request_sent);
+        ui.end_row();
+
+        ui.label("Resposta do aluno");
+        widgets::reply_status(ui, &mut v.response);
+        ui.end_row();
+
+        if v.response == ReplyStatus::Replied {
+            ui.label("Respondeu em");
+            widgets::opt_date(ui, "responded", &mut v.responded_on);
+            ui.end_row();
+        }
+
+        ui.label("Data");
+        widgets::opt_date(ui, "date", &mut v.date);
+        ui.end_row();
+        ui.label("Horário");
+        widgets::opt_time(ui, "time", &mut v.time);
+        ui.end_row();
+        ui.label("Convidar");
+        ui.horizontal_wrapped(|ui| {
+            invite = widgets::share_buttons(ui, v.date.is_some(), &uid);
+        });
+        ui.end_row();
+
+        widgets::field_label(ui, "Supervisor(a) participa");
+        widgets::tri_state(ui, &mut v.line_manager_attending);
+        ui.end_row();
+
+        ui.label("Realizada");
+        ui.checkbox(&mut v.completed, "Visita feita");
+        ui.end_row();
+    });
+    widgets::notes(ui, &mut v.notes, "Anotações da visita…");
     invite
 }

@@ -63,6 +63,8 @@ pub struct ListState<'a> {
     pub search: &'a mut String,
     pub show_archived: &'a mut bool,
     pub selected: &'a mut Option<Uuid>,
+    /// "Ocultar nomes": names, numbers and emails are dots.
+    pub private: bool,
 }
 
 /// Returns true when "Adicionar aluno" was clicked.
@@ -143,7 +145,7 @@ pub fn show(ui: &mut Ui, db: &Database, cat: &Category, st: ListState<'_>) -> bo
         Category::Tcc(_) => &["Nome", "Matrícula", "Curso", "Contato inicial", "Reuniões", "Entregas"],
         Category::Ic => &["Nome", "Matrícula", "Modalidade", "Bolsa", "Reuniões", "Próximo prazo"],
         Category::Pos(_) => &["Nome", "Matrícula", "Nível", "Bolsa", "Reuniões", "Próximo prazo"],
-        Category::Placement => &["Nome", "Matrícula", "Empresa", "Visita 1", "Visita 2"],
+        Category::Placement => &["Nome", "Matrícula", "Empresa", "Visitas"],
         Category::Advisee => &["Nome", "Matrícula", "Curso", "1º semestre", "2º semestre"],
         Category::All => &["Nome", "Matrícula", "E-mail", "Curso", "Vínculos"],
     };
@@ -151,7 +153,8 @@ pub fn show(ui: &mut Ui, db: &Database, cat: &Category, st: ListState<'_>) -> bo
     theme::card_frame(ui)
         .inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 4 })
         .show(ui, |ui| {
-            egui::ScrollArea::horizontal().show(ui, |ui| table(ui, db, cat, &rows, mixed, headers, st.selected, today));
+            egui::ScrollArea::horizontal()
+                .show(ui, |ui| table(ui, db, cat, &rows, mixed, headers, st.selected, st.private, today));
         });
     add
 }
@@ -165,6 +168,7 @@ fn table(
     mixed: bool,
     headers: &[&str],
     selected: &mut Option<Uuid>,
+    private: bool,
     today: NaiveDate,
 ) {
     ui.spacing_mut().item_spacing.x = 6.0;
@@ -197,20 +201,29 @@ fn table(
                 let s = rows[row.index()];
                 row.set_selected(*selected == Some(s.id));
                 row.col(|ui| {
-                    theme::avatar(ui, &s.name, 30.0);
-                    let text = if s.name.is_empty() { "(sem nome)" } else { &s.name };
+                    theme::avatar(ui, if private { "" } else { &s.name }, 30.0);
+                    let text = if private {
+                        "•".repeat(10)
+                    } else if s.name.is_empty() {
+                        "(sem nome)".into()
+                    } else {
+                        s.name.clone()
+                    };
                     let mut rt = theme::semibold(text);
                     if s.archived {
                         rt = rt.color(theme::muted(ui));
                     }
-                    ui.add(egui::Label::new(rt).truncate());
+                    let name = ui.add(egui::Label::new(rt).truncate());
+                    if let Some(title) = work_title(cat, s).filter(|_| !private) {
+                        name.on_hover_text(title);
+                    }
                     if s.archived {
                         ui.label(RichText::new(icons::ARCHIVE).color(theme::muted(ui)))
                             .on_hover_text("Arquivado");
                     }
                 });
                 row.col(|ui| {
-                    let text = if hide { masked(&s.enrollment) } else { s.enrollment.clone() };
+                    let text = if hide || private { masked(&s.enrollment) } else { s.enrollment.clone() };
                     ui.label(RichText::new(text).color(theme::muted(ui)));
                 });
                 match cat {
@@ -237,7 +250,7 @@ fn table(
                         row.col(|ui| {
                             ui.label(f.modality.short());
                         });
-                        row.col(|ui| grant_chip(ui, &f.grant, today));
+                        row.col(|ui| grant_chip(ui, &f.grant, f.grant_end(), today));
                         row.col(|ui| meetings_chip(ui, &f.meetings, &db.settings, today));
                         row.col(|ui| next_deadline_chip(ui, f.next_step(), today));
                     }
@@ -254,7 +267,7 @@ fn table(
                                     .on_hover_text("Coorientação");
                             }
                         });
-                        row.col(|ui| grant_chip(ui, &p.grant, today));
+                        row.col(|ui| grant_chip(ui, &p.grant, p.grant_end(), today));
                         row.col(|ui| meetings_chip(ui, &p.meetings, &db.settings, today));
                         row.col(|ui| {
                             if p.status.active() {
@@ -267,14 +280,19 @@ fn table(
                     Category::Placement => {
                         let p = s.placement.as_ref().expect("filtered");
                         row.col(|ui| {
-                            ui.add(egui::Label::new(&p.company).truncate());
+                            // The company can name the student.
+                            ui.add(egui::Label::new(if private { "" } else { &p.company }).truncate());
                         });
-                        for v in &p.visits {
-                            row.col(|ui| {
+                        row.col(|ui| {
+                            if p.visits.is_empty() {
+                                theme::chip(ui, "nenhuma visita", theme::GREY);
+                            }
+                            for (i, v) in p.visits.iter().enumerate() {
                                 let (text, color) = visit_status(v);
-                                theme::chip(ui, text, color);
-                            });
-                        }
+                                theme::chip(ui, format!("{}: {text}", i + 1), color)
+                                    .on_hover_text(format!("Visita {}", i + 1));
+                            }
+                        });
                     }
                     Category::Advisee => {
                         let a = s.advisee.as_ref().expect("filtered");
@@ -290,7 +308,7 @@ fn table(
                     }
                     Category::All => {
                         row.col(|ui| {
-                            ui.add(egui::Label::new(&s.email).truncate());
+                            ui.add(egui::Label::new(if private { "" } else { &s.email }).truncate());
                         });
                         row.col(|ui| {
                             ui.add(egui::Label::new(&s.course).truncate());
@@ -378,13 +396,29 @@ fn coursework_chip(ui: &mut Ui, f: &TccRecord, settings: &Settings, today: Naive
     }
 }
 
-/// The agency, and the end of the grant when it is near.
-fn grant_chip(ui: &mut Ui, g: &Grant, today: NaiveDate) {
+/// The title of the work (TCC, plano de IC, dissertação…) shown when
+/// hovering a name, if one is set.
+fn work_title<'a>(cat: &Category, s: &'a Student) -> Option<&'a str> {
+    let tcc = || s.tcc.as_ref().map(|t| t.title.as_str());
+    let ic = || s.ic.as_ref().map(|i| i.title.as_str());
+    let pos = || s.pos.as_ref().map(|p| p.title.as_str());
+    let title = match cat {
+        Category::Tcc(_) => tcc(),
+        Category::Ic => ic(),
+        Category::Pos(_) => pos(),
+        Category::All => [tcc(), ic(), pos()].into_iter().flatten().find(|t| !t.trim().is_empty()),
+        Category::Placement | Category::Advisee => None,
+    }?;
+    Some(title.trim()).filter(|t| !t.is_empty())
+}
+
+/// The agency, and the end of the grant (`end`) when it is near.
+fn grant_chip(ui: &mut Ui, g: &Grant, end: Option<NaiveDate>, today: NaiveDate) {
     if !g.active() {
         theme::chip(ui, "sem bolsa", theme::GREY);
         return;
     }
-    match g.end() {
+    match end {
         Some(end) if end < today => theme::chip(ui, format!("{} · encerrada", g.agency_label()), theme::GREY),
         Some(end) if (end - today).num_days() <= 90 => {
             theme::chip(ui, format!("{} · até {}", g.agency_label(), widgets::fmt_short(end)), theme::AMBER)

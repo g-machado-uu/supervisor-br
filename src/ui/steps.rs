@@ -1,7 +1,7 @@
 //! Shared pieces of the research sections (IC and pós-graduação): deadline
 //! rows with their reminders, deadlines added by hand, and the grant (bolsa).
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use egui::{RichText, Ui};
 
 use crate::model::{
@@ -184,9 +184,39 @@ fn agency_text(id: &str) -> String {
     }
 }
 
+/// Whose grant the editor shows.
+#[derive(Clone, Copy)]
+pub enum GrantOf {
+    /// Iniciação científica: the grant has its own start.
+    Ic,
+    /// A postgraduate student: the level, the enrolment (where a grant
+    /// without its own start begins) and the final deadline of the course.
+    Pos {
+        level: Level,
+        start: Option<NaiveDate>,
+        final_deadline: Option<NaiveDate>,
+    },
+}
+
+/// Whole months of a grant from `start` to its last day `end`.
+fn months_between(start: NaiveDate, end: NaiveDate) -> i64 {
+    // A grant of whole months ends the day before its start's day of the month.
+    let after = end.succ_opt().unwrap_or(end);
+    let mut months = i64::from(after.year() - start.year()) * 12 + i64::from(after.month()) - i64::from(start.month());
+    if after.day() < start.day() {
+        months -= 1;
+    }
+    months.max(0)
+}
+
 /// The grant: agency (federal, the 27 FAPs or other), modality, process
-/// number, start, length and any extension. `level` is `None` for IC.
-pub fn grant_editor(ui: &mut Ui, salt: &str, g: &mut Grant, level: Option<Level>) {
+/// number, start, length and any extension, and its end: worked out, typed
+/// in, or (postgraduate) linked to the final deadline of the course.
+pub fn grant_editor(ui: &mut Ui, salt: &str, g: &mut Grant, of: GrantOf) {
+    let (level, course_start, final_deadline) = match of {
+        GrantOf::Ic => (None, None, None),
+        GrantOf::Pos { level, start, final_deadline } => (Some(level), start, final_deadline),
+    };
     let typical = typical_grant_months(level);
     ui.push_id(salt, |ui| {
         widgets::form_grid(ui, "grant-grid", |ui| {
@@ -216,10 +246,7 @@ pub fn grant_editor(ui: &mut Ui, salt: &str, g: &mut Grant, level: Option<Level>
                     g.months = typical;
                 }
                 if let Some(a) = agency_by_id(&g.agency) {
-                    ui.add(
-                        egui::Label::new(RichText::new(a.name).small().color(theme::muted(ui)))
-                            .wrap_mode(egui::TextWrapMode::Wrap),
-                    );
+                    small_wrapped(ui, a.name);
                 }
             });
             ui.end_row();
@@ -243,45 +270,140 @@ pub fn grant_editor(ui: &mut Ui, salt: &str, g: &mut Grant, level: Option<Level>
             widgets::text_field(ui, &mut g.process, "Opcional");
             ui.end_row();
             ui.label("Início da vigência");
-            widgets::opt_date(ui, "start", &mut g.start);
+            match (g.start, level) {
+                // Postgraduate grants start at enrolment unless set otherwise.
+                (None, Some(_)) => {
+                    ui.horizontal_wrapped(|ui| {
+                        let text = match course_start {
+                            Some(start) => format!("No ingresso ({})", widgets::fmt_date(Some(start))),
+                            None => "No ingresso (defina-o em Datas e prazos)".into(),
+                        };
+                        ui.label(text);
+                        if ui
+                            .small_button("Alterar…")
+                            .on_hover_text("A bolsa começa em outro dia")
+                            .clicked()
+                        {
+                            g.start = Some(course_start.unwrap_or_else(widgets::today));
+                        }
+                    });
+                }
+                _ => widgets::opt_date(ui, "start", &mut g.start),
+            }
             ui.end_row();
-            ui.label("Duração");
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut g.months).range(0..=72).suffix(" meses"));
-                if g.months != typical
-                    && ui
-                        .small_button(format!("Usual: {typical} meses"))
+            if level.is_some() {
+                widgets::field_label(ui, "Vínculo ao curso");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut g.until_final, "Vigência até o prazo final de conclusão")
                         .on_hover_text(
-                            "IC: 12 meses, renovável (CNPq RN-017/2006). Mestrado: até 24 meses; \
-                             doutorado: até 48 (CAPES Portaria 76/2010, CNPq e a maioria das FAPs).",
-                        )
-                        .clicked()
-                {
-                    g.months = typical;
-                }
-            });
-            ui.end_row();
-            ui.label("Prorrogação");
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut g.extension_months).range(0..=24).suffix(" meses"));
-                    combo(ui, "reason", &mut g.extension_reason, &ExtensionReason::ALL, |r| r.label());
+                            "A bolsa termina no prazo final do curso (defesa), com as prorrogações dele, \
+                             em vez de durar um número fixo de meses.",
+                        );
+                    if g.until_final && final_deadline.is_none() {
+                        ui.colored_label(
+                            theme::fg(ui, theme::AMBER),
+                            format!("{} Defina o prazo final em Datas e prazos; até lá vale a duração abaixo.", icons::WARNING),
+                        );
+                    }
                 });
-                let hint = g.extension_reason.hint();
-                if !hint.is_empty() {
-                    ui.add(
-                        egui::Label::new(RichText::new(hint).small().color(theme::muted(ui)))
-                            .wrap_mode(egui::TextWrapMode::Wrap),
-                    );
+                ui.end_row();
+            }
+            let linked = g.until_final && final_deadline.is_some() && level.is_some();
+            ui.label("Duração");
+            if let (true, Some(end)) = (linked, final_deadline) {
+                let start = g.start.or(course_start);
+                let text = match start {
+                    Some(start) => format!("até o prazo final ({})", pt::count(months_between(start, end) as usize, "mês", "meses")),
+                    None => "até o prazo final".into(),
+                };
+                ui.label(text);
+            } else {
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut g.months).range(0..=72).suffix(" meses"));
+                    if g.months != typical
+                        && ui
+                            .small_button(format!("Usual: {typical} meses"))
+                            .on_hover_text(
+                                "IC: 12 meses, renovável (CNPq RN-017/2006). Mestrado: até 24 meses; \
+                                 doutorado: até 48 (CAPES Portaria 76/2010, CNPq e a maioria das FAPs).",
+                            )
+                            .clicked()
+                    {
+                        g.months = typical;
+                    }
+                });
+            }
+            ui.end_row();
+            if !linked {
+                ui.label("Prorrogação");
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut g.extension_months).range(0..=24).suffix(" meses"));
+                        combo(ui, "reason", &mut g.extension_reason, &ExtensionReason::ALL, |r| r.label());
+                    });
+                    let hint = g.extension_reason.hint();
+                    if !hint.is_empty() {
+                        small_wrapped(ui, hint);
+                    }
+                });
+                ui.end_row();
+            }
+            ui.label("Fim da vigência");
+            if let (true, Some(end)) = (linked, final_deadline) {
+                ui.label(theme::semibold(pt::date(end)))
+                    .on_hover_text("O prazo final de conclusão do curso");
+                ui.end_row();
+                return;
+            }
+            let calculated = g.calculated_end(course_start);
+            ui.vertical(|ui| match g.end_override {
+                None => {
+                    ui.horizontal_wrapped(|ui| {
+                        match calculated {
+                            Some(end) => ui.label(theme::semibold(pt::date(end))),
+                            None => ui.label(RichText::new("defina o início e a duração").color(theme::muted(ui))),
+                        }
+                        .on_hover_text("Início + duração + prorrogação");
+                        if ui
+                            .small_button(format!("{} Alterar…", icons::PENCIL_SIMPLE))
+                            .on_hover_text("Digite o fim da vigência quando ele for diferente do calculado")
+                            .clicked()
+                        {
+                            g.end_override = Some(calculated.unwrap_or_else(widgets::today));
+                        }
+                    });
+                }
+                Some(_) => {
+                    widgets::opt_date(ui, "end", &mut g.end_override);
+                    if let Some(end) = calculated.filter(|end| g.end_override != Some(*end)) {
+                        ui.horizontal_wrapped(|ui| {
+                            small_wrapped(ui, &format!("Calculado: {}", pt::date(end)));
+                            if ui.small_button("Usar esta data").clicked() {
+                                g.end_override = None;
+                            }
+                        });
+                    }
                 }
             });
-            ui.end_row();
-            ui.label("Fim da vigência");
-            match g.end() {
-                Some(end) => ui.label(theme::semibold(pt::date(end))),
-                None => ui.label(RichText::new("defina o início e a duração").color(theme::muted(ui))),
-            };
             ui.end_row();
         });
     });
+}
+
+fn small_wrapped(ui: &mut Ui, text: &str) {
+    ui.add(egui::Label::new(RichText::new(text).small().color(theme::muted(ui))).wrap_mode(egui::TextWrapMode::Wrap));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grant_lengths_in_months() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        assert_eq!(months_between(d(2026, 3, 1), d(2028, 2, 29)), 24);
+        assert_eq!(months_between(d(2026, 3, 15), d(2027, 3, 14)), 12);
+        assert_eq!(months_between(d(2026, 3, 15), d(2027, 3, 10)), 11);
+        assert_eq!(months_between(d(2026, 3, 1), d(2026, 2, 1)), 0);
+    }
 }
