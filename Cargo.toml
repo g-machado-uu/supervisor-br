@@ -1,6 +1,6 @@
 [package]
 name = "supervisor-br"
-version = "0.5.0"
+version = "0.5.2"
 description = "Acompanhamento de orientandos para professores de universidades brasileiras"
 edition = "2024"
 # Required by egui 0.37.

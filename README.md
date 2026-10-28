@@ -13,13 +13,16 @@ Um aplicativo de desktop para professores de universidades brasileiras acompanha
 - **Painel**: o que vem pela frente nos próximos dias e o que precisa de atenção (aluno sem contato inicial, entrega atrasada, prazo de qualificação chegando, bolsa perto do fim).
 - **Listas** para cada grupo de alunos. Clique em um aluno para abrir os detalhes à direita. Um mesmo aluno pode ter vários vínculos (por exemplo, TCC e iniciação científica).
 - **Reuniões** avulsas ou recorrentes, on-line (Google Meet, Microsoft Teams, Zoom ou RNP, com o link) ou presenciais. Marque cada semana como realizada, cancelada ou remarcada.
-- **Agenda** em lista ou em grade mensal. Exporte qualquer item para um arquivo `.ics` (Google Agenda, Outlook) ou salve o convite de uma reunião para enviar ao aluno.
+- **Agenda** em lista ou em grade mensal, com a semana começando no domingo ou na segunda (Configurações › Agenda). Altere os itens direto nela: botão direito para editar, excluir ou remarcar, arraste para outro dia na grade mensal, ou selecione e aperte **Delete**.
+- **Convites**: o botão **Google Agenda** abre o evento já preenchido, com o aluno como convidado (e, no Google Meet, o link criado pelo próprio Google). Também dá para exportar qualquer item para um arquivo `.ics` (Google Agenda, Outlook) ou salvar o convite de uma reunião para enviar ao aluno.
+- **Importar agenda**: traga eventos de um `.ics` do Google Agenda ou do Outlook, escolhendo o aluno e o vínculo de cada um. Os eventos que você deixar de fora são lembrados e não aparecem de novo na próxima importação.
+- **Detalhes do aluno** em seções que podem ser recolhidas. As etiquetas de vínculo abaixo do nome (TCC, IC, Estágio…) levam direto à seção correspondente.
 
 ### Graduação
 
 - **TCC**: cursos e disciplinas (TCC I, TCC II…) configuráveis, com as entregas de cada uma, prazos por semana letiva ou data fixa, prorrogação por aluno, e a defesa com banca, local e nota.
 - **Iniciação científica**: plano de trabalho, projeto, modalidade (PIBIC, PIBITI, PIBIC-Af, PIBIC-EM, voluntária, institucional), bolsa e os prazos do ciclo: relatório parcial, relatório final e apresentação no seminário/congresso de IC.
-- **Estágio supervisionado**: concedente, estágio obrigatório ou não, vigência do Termo de Compromisso de Estágio (Lei 11.788/2008), relatório e visitas de acompanhamento.
+- **Estágio supervisionado**: concedente, estágio obrigatório ou não, vigência do Termo de Compromisso de Estágio (Lei 11.788/2008), relatório e quantas visitas de acompanhamento forem necessárias, presenciais ou on-line.
 - **Tutoria acadêmica**: reuniões de acompanhamento por semestre.
 
 ![Iniciação científica](docs/screenshots/iniciacao_cientifica.png)
@@ -37,7 +40,7 @@ Um aplicativo de desktop para professores de universidades brasileiras acompanha
 
 ### Bolsas e agências de fomento
 
-A bolsa de cada aluno (IC ou pós) registra a agência, a modalidade, o número do processo, o início, a duração, a prorrogação e o motivo dela. O fim da vigência é calculado e o painel avisa 90 dias antes.
+A bolsa de cada aluno (IC ou pós) registra a agência, a modalidade, o número do processo, o início, a duração, a prorrogação e o motivo dela. O fim da vigência é calculado e o painel avisa 90 dias antes. Se o termo de outorga trouxer outra data, altere-a com **Alterar…**; na pós-graduação, **Vigência até o prazo final de conclusão** faz a bolsa terminar no prazo final do aluno.
 
 Agências na lista:
 
@@ -67,7 +70,15 @@ De onde vêm esses números:
 
 As regras variam entre programas e mudam com o tempo. Os prazos sugeridos são um ponto de partida: confira o regimento do programa e o termo de outorga da bolsa e ajuste o que for preciso.
 
-## Privacidade: matrícula e CPF
+## Privacidade
+
+### Modo privacidade
+
+Para usar o app com a tela à vista (numa reunião, projetando ou num lugar público), clique em **Ocultar nomes** no topo do painel. Nomes, matrículas, e-mails e empresas somem do painel, das listas, da agenda e dos detalhes de cada aluno; os compromissos continuam aparecendo, sem o nome. **Mostrar nomes** traz tudo de volta.
+
+O olho em **Dados do aluno** faz o mesmo para um aluno só: esconde os dados dele ou, no modo privacidade, mostra só os dele.
+
+### Matrícula e CPF
 
 Em muitas instituições a matrícula é o próprio CPF do aluno. Por isso:
 
@@ -129,11 +140,11 @@ O arquivo-chave fica em:
 
 ### Binários prontos
 
-Baixe o arquivo do seu sistema na página de [Releases](https://github.com/g-machado-uu/supervisor-br/releases) e confira-o com o `SHA256SUMS.txt`.
+Baixe o zip do seu sistema na página de [Releases](https://github.com/g-machado-uu/supervisor-br/releases) e descompacte-o. As notas de cada release explicam como conferir o programa com o `SHA256SUMS.txt`.
 
-- **Linux**: `chmod +x supervisor-br-linux && ./supervisor-br-linux`. Precisa de `libxkbcommon` e `libwayland-client` (já presentes na maioria das distribuições com interface gráfica).
-- **Windows**: execute `supervisor-br-windows.exe`. Se aparecer _"O Windows protegeu o computador"_, clique em _Mais informações_ → _Executar assim mesmo_. Se faltar `VCRUNTIME140.dll`, instale o [Visual C++ Redistributable](https://aka.ms/vc14/vc_redist.x64.exe).
-- **macOS** (Apple Silicon): o binário não é assinado. Rode `xattr -d com.apple.quarantine supervisor-br-macos && chmod +x supervisor-br-macos` e depois `./supervisor-br-macos` no Terminal.
+- **Linux** (`supervisor-br-Linux.zip`): `./supervisor-br`. Precisa de `libxkbcommon` e `libwayland-client` (já presentes na maioria das distribuições com interface gráfica).
+- **Windows** (`supervisor-br-Windows.zip`): execute `supervisor-br.exe`. Se aparecer _"O Windows protegeu o computador"_, clique em _Mais informações_ → _Executar assim mesmo_. Se faltar `VCRUNTIME140.dll`, instale o [Visual C++ Redistributable](https://aka.ms/vc14/vc_redist.x64.exe).
+- **macOS** (`supervisor-br-macOS.zip`, Apple Silicon): o binário não é assinado. Rode `xattr -d com.apple.quarantine supervisor-br` e depois `./supervisor-br` no Terminal.
 
 ### A partir do código
 
@@ -169,4 +180,9 @@ SUPERVISOR_SHOTS=/alguma/pasta cargo test              # também salva screensho
 
 Os testes da interface percorrem todas as telas e painéis de detalhes em dois tamanhos de janela, nos modos claro e escuro, e falham se houver campo de texto pequeno demais ou widgets sobrepostos.
 
-Enviar uma tag `v*` roda o `cargo audit` e os testes, compila os binários para Linux, Windows e macOS no GitHub Actions e publica uma release com eles e o `SHA256SUMS.txt`.
+### Publicar uma versão
+
+1. Atualize `version` no `Cargo.toml` e escreva as notas em `.github/release-notes/vX.Y.Z.md`.
+2. Faça o commit e envie a tag: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+
+A tag dispara o GitHub Actions: `cargo audit`, testes e compilação para Linux, Windows e macOS. Em seguida, ele publica a release com um zip por sistema, o `SHA256SUMS.txt` e as notas da versão, seguidas de `.github/release-notes/checking-your-download.md`. Sem o arquivo de notas da tag, a release falha.
